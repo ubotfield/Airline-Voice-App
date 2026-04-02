@@ -296,113 +296,34 @@ app.post("/api/stt", async (req, res) => {
 });
 
 // ─── Demo Persona Routes ────────────────────────────────────────
-// Hierarchy Custom Settings are not reliably queryable via SOQL from
-// all OAuth user contexts. We use the sObject REST endpoint to
-// GET/PATCH the record directly by ID instead.
+// The Connected App's Client Credentials token has limited data API access
+// (SOQL queries and sObject POST/PATCH return INVALID_SESSION_ID).
+// This is a known limitation of External Client App migrated tokens.
+// For the demo, we store persona data in-memory with env var defaults.
 
-// Helper: Get the Demo_Persona__c org-level custom setting record directly
-// Uses the Hierarchy Custom Setting sObject REST endpoint — no SOQL needed.
-// The SOQL query endpoint returns 401 "session not valid for API" with this
-// Connected App's Client Credentials token (an External Client App migration
-// issue), but sObject REST endpoints work fine.
-async function getDemoPersona(): Promise<{ data: any | null; error?: string; statusCode?: number }> {
-  try {
-    // Hierarchy Custom Settings have a special OrgDefault endpoint
-    const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/OrgDefault`);
-    const text = await sfRes.text();
-    console.log(`[demo-persona] OrgDefault: ${sfRes.status} ${text.substring(0, 300)}`);
-    if (sfRes.ok) {
-      return { data: JSON.parse(text), statusCode: sfRes.status };
-    }
-    // 404 means no org-level record exists yet
-    if (sfRes.status === 404) return { data: null, statusCode: 404 };
-    return { data: null, error: `${sfRes.status}: ${text.substring(0, 200)}`, statusCode: sfRes.status };
-  } catch (e: any) {
-    return { data: null, error: e.message };
-  }
-}
+let demoPersona = {
+  customerName: process.env.DEMO_CUSTOMER_NAME || "Scott",
+  customerPhone: process.env.DEMO_CUSTOMER_PHONE || "555-0100",
+  customerEmail: process.env.DEMO_CUSTOMER_EMAIL || "scott@freshkitchens.com",
+};
 
 app.get("/api/demo-persona", async (_req, res) => {
-  try {
-    const { data, error } = await getDemoPersona();
-
-    if (data) {
-      return res.json({
-        id: data.Id,
-        customerName: data.Customer_Name__c || "",
-        customerPhone: data.Customer_Phone__c || "",
-        customerEmail: data.Customer_Email__c || "",
-        isConfigured: !!(data.Customer_Name__c && data.Customer_Phone__c),
-      });
-    }
-
-    if (error) console.error("[demo-persona] GET error:", error);
-    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false, _debug: error || "no record" });
-  } catch (err: any) {
-    console.error("[demo-persona] Error:", err.message);
-    return res.status(500).json({ error: err.message });
-  }
+  res.json({
+    id: "local",
+    customerName: demoPersona.customerName,
+    customerPhone: demoPersona.customerPhone,
+    customerEmail: demoPersona.customerEmail,
+    isConfigured: !!(demoPersona.customerName && demoPersona.customerPhone),
+  });
 });
 
 app.put("/api/demo-persona", async (req, res) => {
   const { customerName, customerPhone, customerEmail } = req.body;
-  try {
-    const { data: existing } = await getDemoPersona();
-
-    if (existing?.Id) {
-      // Update existing record by direct PATCH
-      const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/${existing.Id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          Customer_Name__c: customerName || null,
-          Customer_Phone__c: customerPhone || null,
-          Customer_Email__c: customerEmail || null,
-        }),
-      });
-      if (!sfRes.ok && sfRes.status !== 204) {
-        const err = await sfRes.text();
-        console.error("[demo-persona] Update failed:", sfRes.status, err);
-        return res.status(sfRes.status).json({ error: "Failed to update demo persona", details: err.substring(0, 200) });
-      }
-      console.log("[demo-persona] Updated record:", existing.Id);
-      return res.json({ success: true, action: "updated", id: existing.Id });
-    } else {
-      // Create new org-level record — get org ID from userinfo (no SOQL needed)
-      const { accessToken, instanceUrl } = await getAccessToken();
-      const userInfoRes = await fetch(`${instanceUrl}/services/oauth2/userinfo`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      let orgId = "";
-      if (userInfoRes.ok) {
-        const info = await userInfoRes.json();
-        orgId = info.organization_id || "";
-      }
-      if (!orgId) {
-        return res.status(500).json({ error: "Could not determine org ID from userinfo" });
-      }
-
-      const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c`, {
-        method: "POST",
-        body: JSON.stringify({
-          Customer_Name__c: customerName || null,
-          Customer_Phone__c: customerPhone || null,
-          Customer_Email__c: customerEmail || null,
-          SetupOwnerId: orgId,
-        }),
-      });
-      if (!sfRes.ok) {
-        const err = await sfRes.text();
-        console.error("[demo-persona] Create failed:", sfRes.status, err);
-        return res.status(sfRes.status).json({ error: "Failed to create demo persona", details: err.substring(0, 200) });
-      }
-      const created = await sfRes.json();
-      console.log("[demo-persona] Created record:", created.id);
-      return res.json({ success: true, action: "created", id: created.id });
-    }
-  } catch (err: any) {
-    console.error("[demo-persona] Error:", err.message);
-    return res.status(500).json({ error: err.message });
-  }
+  if (customerName !== undefined) demoPersona.customerName = customerName || "";
+  if (customerPhone !== undefined) demoPersona.customerPhone = customerPhone || "";
+  if (customerEmail !== undefined) demoPersona.customerEmail = customerEmail || "";
+  console.log("[demo-persona] Updated:", demoPersona);
+  res.json({ success: true, action: "updated", id: "local" });
 });
 
 // ─── Send Receipt Route ─────────────────────────────────────────
