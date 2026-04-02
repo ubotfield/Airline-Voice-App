@@ -4,8 +4,8 @@
  *   Strategy A (Safari browser only): Web Speech API (SpeechRecognition)
  *   Strategy B (Everything else): MediaRecorder -> server-side Gemini STT
  *
- * V2 TTS: Browser-native speechSynthesis ONLY (free, zero API cost).
- * No ElevenLabs dependency. No server TTS endpoint.
+ * TTS: LLM Gateway (high-quality Gemini voices like Kore/Aoede) with
+ * browser-native speechSynthesis as fallback when gateway is not configured.
  *
  * KEY DESIGN (v3 — iOS-proof):
  *   - MediaRecorder pipeline is COMPLETELY INDEPENDENT of AudioContext.
@@ -640,19 +640,108 @@ export class NativeVoiceService {
   }
 
   // ===================================================================
-  // V2 TTS: Browser-native speechSynthesis ONLY
+  // TTS: LLM Gateway (high-quality Gemini voice) with browser fallback
   // ===================================================================
+
+  // AudioContext for PCM playback — reused across calls
+  private ttsAudioContext: AudioContext | null = null;
 
   private async speakText(text: string): Promise<void> {
     if (!this._isConnected) return;
 
-    if (!("speechSynthesis" in window)) {
-      dbg("speechSynthesis not available — skipping TTS");
-      return;
+    // Try server-side LLM Gateway TTS first (high-quality Gemini voice)
+    try {
+      dbg(`Trying LLM Gateway TTS: "${text.substring(0, 60)}..."`);
+      const played = await this.speakWithServerTTS(text);
+      if (played) return;
+    } catch (err: any) {
+      dbg(`Server TTS failed: ${err?.message} — falling back to browser`);
     }
 
-    dbg(`Speaking via browser: "${text.substring(0, 60)}..."`);
-    await this.speakWithBrowserTTS(text);
+    // Fallback: browser-native speechSynthesis
+    if ("speechSynthesis" in window) {
+      dbg(`Falling back to browser TTS: "${text.substring(0, 60)}..."`);
+      await this.speakWithBrowserTTS(text);
+    }
+  }
+
+  /**
+   * Play audio via LLM Gateway TTS (server-side proxy).
+   * Returns true if audio was played successfully, false if server TTS not available.
+   */
+  private async speakWithServerTTS(text: string): Promise<boolean> {
+    const res = await fetch(apiUrl("/api/tts"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!res.ok) {
+      // 503 = TTS not configured, fall back silently
+      if (res.status === 503) {
+        dbg("Server TTS not configured (no API key) — will use browser");
+        return false;
+      }
+      const errText = await res.text().catch(() => "unknown error");
+      throw new Error(`TTS HTTP ${res.status}: ${errText.substring(0, 200)}`);
+    }
+
+    // Response is raw PCM: Linear16, 24kHz, mono
+    const arrayBuffer = await res.arrayBuffer();
+    if (arrayBuffer.byteLength < 100) {
+      dbg("Server TTS returned tiny audio — falling back");
+      return false;
+    }
+
+    dbg(`Got ${arrayBuffer.byteLength} bytes PCM from server TTS`);
+    await this.playPCM(arrayBuffer, 24000);
+    return true;
+  }
+
+  /**
+   * Play raw PCM (signed 16-bit little-endian, mono) via Web Audio API.
+   */
+  private async playPCM(pcmBuffer: ArrayBuffer, sampleRate: number): Promise<void> {
+    // Create/reuse AudioContext for TTS playback
+    if (!this.ttsAudioContext || this.ttsAudioContext.state === "closed") {
+      this.ttsAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate });
+    }
+    if (this.ttsAudioContext.state === "suspended") {
+      await this.ttsAudioContext.resume();
+    }
+
+    // Convert signed 16-bit PCM to Float32 for Web Audio API
+    const pcmData = new Int16Array(pcmBuffer);
+    const float32 = new Float32Array(pcmData.length);
+    for (let i = 0; i < pcmData.length; i++) {
+      float32[i] = pcmData[i] / 32768;
+    }
+
+    // Create audio buffer and play
+    const audioBuffer = this.ttsAudioContext.createBuffer(1, float32.length, sampleRate);
+    audioBuffer.getChannelData(0).set(float32);
+
+    return new Promise<void>((resolve) => {
+      const source = this.ttsAudioContext!.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.ttsAudioContext!.destination);
+      source.onended = () => resolve();
+
+      // Safety timeout
+      const estimatedMs = (float32.length / sampleRate) * 1000 + 1000;
+      const timeout = setTimeout(() => {
+        dbg("PCM playback safety timeout");
+        try { source.stop(); } catch { /* ignore */ }
+        resolve();
+      }, estimatedMs);
+
+      source.onended = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+
+      source.start(0);
+    });
   }
 
   private speakWithBrowserTTS(text: string): Promise<void> {
@@ -785,6 +874,9 @@ export class NativeVoiceService {
 
     try { this.audioContext?.close(); } catch { /* ignore */ }
     this.audioContext = null;
+
+    try { this.ttsAudioContext?.close(); } catch { /* ignore */ }
+    this.ttsAudioContext = null;
 
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 

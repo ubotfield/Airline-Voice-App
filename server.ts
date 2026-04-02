@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import WebSocket from "ws";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +38,13 @@ const SF_AGENT_ID = (process.env.SF_AGENT_ID || process.env.AGENT_ID)!;
 // ║ Exists" for /einstein/ai-agent/v1/* paths. DO NOT CHANGE THIS.    ║
 // ╚════════════════════════════════════════════════════════════════════╝
 const AGENT_API_BASE = "https://api.salesforce.com";
+
+// ─── LLM Gateway TTS config ────────────────────────────────────────
+const LLM_GATEWAY_TTS_URL =
+  process.env.LLM_GATEWAY_TTS_URL || "wss://bot-svc-llm.sfproxy.einstein.aws-dev4-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
+const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || "";
+const TTS_VOICE = process.env.TTS_VOICE || "Kore";
+const TTS_MODEL = process.env.TTS_MODEL || "gemini-2.5-flash-tts";
 
 // ─── Token cache ─────────────────────────────────────────────────
 let cachedToken: string | null = null;
@@ -295,6 +303,100 @@ app.post("/api/stt", async (req, res) => {
   }
 });
 
+// ─── TTS: LLM Gateway (high-quality Gemini voices) ──────────────
+
+app.post("/api/tts", async (req, res) => {
+  const { text, voice } = req.body;
+  if (!text) return res.status(400).json({ error: "text is required" });
+
+  if (!LLM_GATEWAY_API_KEY) {
+    console.warn("[tts] No LLM_GATEWAY_API_KEY — falling back to empty response");
+    return res.status(503).json({ error: "TTS not configured" });
+  }
+
+  const ttsStart = Date.now();
+
+  try {
+    const audioChunks: Buffer[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(LLM_GATEWAY_TTS_URL, {
+        headers: {
+          Authorization: `API_KEY ${LLM_GATEWAY_API_KEY}`,
+          "x-client-feature-id": "Scotts Kitchen Voice",
+          "x-app-type": "ScottsQSR",
+        },
+      });
+
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new Error("TTS timeout after 15s"));
+      }, 15000);
+
+      ws.on("open", () => {
+        // Send TTS request
+        ws.send(JSON.stringify({
+          model: TTS_MODEL,
+          input: text.substring(0, 5000),
+          voice: voice || TTS_VOICE,
+        }));
+      });
+
+      ws.on("message", (data: WebSocket.Data, isBinary: boolean) => {
+        if (isBinary) {
+          // Binary frame = PCM audio chunk
+          audioChunks.push(Buffer.from(data as Buffer));
+        } else {
+          // Text frame = JSON status message
+          try {
+            const msg = JSON.parse(data.toString());
+            if (msg.status === "completed") {
+              clearTimeout(timeout);
+              ws.close();
+              resolve();
+            } else if (msg.error) {
+              clearTimeout(timeout);
+              ws.close();
+              reject(new Error(msg.message || msg.error));
+            }
+            // "ready" status = ignore, wait for our request to be processed
+          } catch { /* ignore parse errors */ }
+        }
+      });
+
+      ws.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+
+      ws.on("close", () => {
+        clearTimeout(timeout);
+        // If we haven't resolved yet, resolve with whatever we have
+        resolve();
+      });
+    });
+
+    if (audioChunks.length === 0) {
+      console.error("[tts] No audio chunks received");
+      return res.status(502).json({ error: "No audio received from TTS" });
+    }
+
+    const pcmBuffer = Buffer.concat(audioChunks);
+    console.log(`[tts] Generated ${pcmBuffer.length} bytes PCM in ${Date.now() - ttsStart}ms (${audioChunks.length} chunks)`);
+
+    // Return raw PCM audio (Linear16, 24kHz, mono)
+    res.set({
+      "Content-Type": "audio/L16;codec=pcm;rate=24000",
+      "Content-Length": pcmBuffer.length.toString(),
+      "X-Audio-Format": "pcm-s16le-24000-mono",
+    });
+    return res.send(pcmBuffer);
+  } catch (err: any) {
+    console.error("[tts] Error:", err.message);
+    return res.status(502).json({ error: "TTS failed", detail: err.message });
+  }
+});
+
 // ─── Demo Persona Routes ────────────────────────────────────────
 // The Connected App's Client Credentials token has limited data API access
 // (SOQL queries and sObject POST/PATCH return INVALID_SESSION_ID).
@@ -373,7 +475,12 @@ app.get("/api/health", async (_req, res) => {
     hasConfig,
     loginUrl: SF_LOGIN_URL || "not set",
     agentId: SF_AGENT_ID ? `${SF_AGENT_ID.substring(0, 8)}...` : "not set",
-    tts: { provider: "browser-native", note: "Using browser speechSynthesis (free, zero-latency)" },
+    tts: {
+      provider: LLM_GATEWAY_API_KEY ? "llm-gateway" : "browser-native",
+      voice: TTS_VOICE,
+      model: TTS_MODEL,
+      gatewayConfigured: !!LLM_GATEWAY_API_KEY,
+    },
     stt: {
       primary: "web-speech-api",
       fallback: "gemini",
@@ -424,7 +531,8 @@ app.listen(PORT, () => {
   console.log(`   Agent ID: ${SF_AGENT_ID || "NOT SET"}`);
   console.log(`   Instance: ${SF_LOGIN_URL}`);
   console.log(`   Auth: ${SF_CLIENT_ID && SF_CLIENT_SECRET ? "Configured ✓" : "⚠️  Missing credentials"}`);
-  console.log(`   TTS: Browser Native (speechSynthesis) — FREE ✓`);
+  console.log(`   TTS: ${LLM_GATEWAY_API_KEY ? `LLM Gateway (${TTS_VOICE} voice) ✓` : "Browser Native (speechSynthesis) — no LLM_GATEWAY_API_KEY"}`);
+  console.log(`   TTS Gateway: ${LLM_GATEWAY_API_KEY ? "Configured ✓" : "⚠️  Set LLM_GATEWAY_API_KEY for high-quality voice"}`);
   console.log(`   STT: Web Speech API (primary) + Gemini (fallback) ${process.env.GEMINI_API_KEY ? "✓" : "⚠️  No GEMINI_API_KEY"}`);
-  console.log(`   V2 Changes: Removed ElevenLabs dependency, using browser-native TTS\n`);
+  console.log(`   V2 Changes: LLM Gateway TTS (Gemini voices) with browser-native fallback\n`);
 });
