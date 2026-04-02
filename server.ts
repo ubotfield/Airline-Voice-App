@@ -299,34 +299,35 @@ app.post("/api/stt", async (req, res) => {
 
 app.get("/api/demo-persona", async (_req, res) => {
   try {
-    // Get org ID first to query org-level custom setting
-    const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
-    const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
-    let orgId = "";
-    if (orgRes.ok) {
-      const orgData = await orgRes.json();
-      if (orgData.records?.length) orgId = orgData.records[0].Id;
-    }
-
-    // Query the org-level custom setting record directly by SetupOwnerId
-    const query = orgId
-      ? encodeURIComponent(`SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c FROM Demo_Persona__c WHERE SetupOwnerId = '${orgId}'`)
-      : encodeURIComponent("SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c FROM Demo_Persona__c LIMIT 1");
-    const sfRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
+    // Use queryAll to bypass Hierarchy Custom Setting visibility restrictions
+    const query = encodeURIComponent(
+      "SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c, SetupOwnerId FROM Demo_Persona__c"
+    );
+    const sfRes = await sfFetch(`/services/data/v62.0/queryAll/?q=${query}`);
     if (!sfRes.ok) {
       const err = await sfRes.text();
-      console.error("[demo-persona] Query failed:", sfRes.status, err);
+      console.error("[demo-persona] queryAll failed:", sfRes.status, err);
+
+      // Fallback: try direct sObject describe to list all records
+      const descRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c`);
+      if (descRes.ok) {
+        const descData = await descRes.json();
+        console.log("[demo-persona] sObject describe:", JSON.stringify(descData).substring(0, 200));
+      }
+
       return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
     }
     const data = await sfRes.json();
+    console.log("[demo-persona] queryAll returned", data.totalSize, "records");
     if (data.records?.length) {
-      const r = data.records[0];
+      // Prefer org-level record (SetupOwnerId starts with 00D)
+      const orgRecord = data.records.find((r: any) => r.SetupOwnerId?.startsWith("00D")) || data.records[0];
       return res.json({
-        id: r.Id,
-        customerName: r.Customer_Name__c || "",
-        customerPhone: r.Customer_Phone__c || "",
-        customerEmail: r.Customer_Email__c || "",
-        isConfigured: !!(r.Customer_Name__c && r.Customer_Phone__c),
+        id: orgRecord.Id,
+        customerName: orgRecord.Customer_Name__c || "",
+        customerPhone: orgRecord.Customer_Phone__c || "",
+        customerEmail: orgRecord.Customer_Email__c || "",
+        isConfigured: !!(orgRecord.Customer_Name__c && orgRecord.Customer_Phone__c),
       });
     }
     return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
@@ -339,32 +340,22 @@ app.get("/api/demo-persona", async (_req, res) => {
 app.put("/api/demo-persona", async (req, res) => {
   const { customerName, customerPhone, customerEmail } = req.body;
   try {
-    // Get org ID to query org-level custom setting
-    const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
-    const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
-    let orgId = "";
-    if (orgRes.ok) {
-      const orgData = await orgRes.json();
-      if (orgData.records?.length) orgId = orgData.records[0].Id;
-    }
-
-    // Check if org-level record already exists
-    const query = orgId
-      ? encodeURIComponent(`SELECT Id FROM Demo_Persona__c WHERE SetupOwnerId = '${orgId}'`)
-      : encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
-    const checkRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
+    // Use queryAll to find org-level record (bypasses Hierarchy Custom Setting visibility)
+    const query = encodeURIComponent("SELECT Id, SetupOwnerId FROM Demo_Persona__c");
+    const checkRes = await sfFetch(`/services/data/v62.0/queryAll/?q=${query}`);
 
     if (!checkRes.ok) {
       const err = await checkRes.text();
-      console.error("[demo-persona] Check query failed:", checkRes.status, err);
+      console.error("[demo-persona] queryAll failed:", checkRes.status, err);
       return res.status(checkRes.status).json({ error: "Failed to query demo persona" });
     }
 
     const checkData = await checkRes.json();
 
     if (checkData.records?.length) {
-      // Update existing record
-      const recordId = checkData.records[0].Id;
+      // Prefer org-level record (SetupOwnerId starts with 00D)
+      const orgRecord = checkData.records.find((r: any) => r.SetupOwnerId?.startsWith("00D")) || checkData.records[0];
+      const recordId = orgRecord.Id;
       const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -381,7 +372,14 @@ app.put("/api/demo-persona", async (req, res) => {
       console.log("[demo-persona] Updated record:", recordId);
       return res.json({ success: true, action: "updated", id: recordId });
     } else {
-      // Create new org-level record
+      // Create new org-level record — get org ID dynamically
+      const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
+      const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
+      let orgId = "";
+      if (orgRes.ok) {
+        const orgData = await orgRes.json();
+        if (orgData.records?.length) orgId = orgData.records[0].Id;
+      }
       if (!orgId) {
         return res.status(500).json({ error: "Could not determine org ID" });
       }
