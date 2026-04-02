@@ -301,59 +301,56 @@ app.post("/api/stt", async (req, res) => {
 // GET/PATCH the record directly by ID instead.
 
 // Helper: find the Demo_Persona__c record ID using multiple strategies
-async function findDemoPersonaId(): Promise<string | null> {
-  // Strategy 1: SOQL query (works when user has visibility)
+async function findDemoPersonaId(): Promise<{ id: string | null; debug: string[] }> {
+  const debug: string[] = [];
+
+  // Strategy 1: Simple SOQL query
   try {
     const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
     const res = await sfFetch(`/services/data/v62.0/query/?q=${q}`);
+    const text = await res.text();
+    debug.push(`S1(SOQL): ${res.status} ${text.substring(0, 300)}`);
     if (res.ok) {
-      const data = await res.json();
-      if (data.records?.length) return data.records[0].Id;
+      const data = JSON.parse(text);
+      if (data.records?.length) return { id: data.records[0].Id, debug };
     }
-  } catch { /* continue to next strategy */ }
+  } catch (e: any) { debug.push(`S1(SOQL) error: ${e.message}`); }
 
-  // Strategy 2: queryAll (includes records hidden by hierarchy visibility)
+  // Strategy 2: queryAll
   try {
     const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
     const res = await sfFetch(`/services/data/v62.0/queryAll/?q=${q}`);
+    const text = await res.text();
+    debug.push(`S2(queryAll): ${res.status} ${text.substring(0, 300)}`);
     if (res.ok) {
-      const data = await res.json();
-      if (data.records?.length) return data.records[0].Id;
+      const data = JSON.parse(text);
+      if (data.records?.length) return { id: data.records[0].Id, debug };
     }
-  } catch { /* continue to next strategy */ }
+  } catch (e: any) { debug.push(`S2(queryAll) error: ${e.message}`); }
 
-  // Strategy 3: Use getUpdated to discover record IDs from the last 30 days
+  // Strategy 3: Try a simple API version check to see if REST API works at all
   try {
-    const end = new Date().toISOString();
-    const start = new Date(Date.now() - 30 * 86400000).toISOString();
-    const res = await sfFetch(
-      `/services/data/v62.0/sobjects/Demo_Persona__c/updated/?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      if (data.ids?.length) return data.ids[0];
-    }
-  } catch { /* continue to next strategy */ }
+    const res = await sfFetch(`/services/data/v62.0/limits/`);
+    const text = await res.text();
+    debug.push(`S3(limits): ${res.status} ${text.substring(0, 300)}`);
+  } catch (e: any) { debug.push(`S3(limits) error: ${e.message}`); }
 
-  // Strategy 4: Use Tooling API to query CustomObject records
+  // Strategy 4: Describe the object to verify it exists
   try {
-    const q = encodeURIComponent("SELECT Id, DeveloperName FROM CustomObject WHERE DeveloperName = 'Demo_Persona'");
-    const res = await sfFetch(`/services/data/v62.0/tooling/query/?q=${q}`);
-    if (res.ok) {
-      const data = await res.json();
-      console.log("[demo-persona] Tooling API result:", JSON.stringify(data).substring(0, 200));
-    }
-  } catch { /* ignore */ }
+    const res = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/describe/`);
+    const text = await res.text();
+    debug.push(`S4(describe): ${res.status} ${text.substring(0, 300)}`);
+  } catch (e: any) { debug.push(`S4(describe) error: ${e.message}`); }
 
-  return null;
+  return { id: null, debug };
 }
 
 app.get("/api/demo-persona", async (_req, res) => {
   try {
-    const recordId = await findDemoPersonaId();
+    const { id: recordId, debug } = await findDemoPersonaId();
+    console.log("[demo-persona] Debug:", debug);
 
     if (recordId) {
-      // Direct sObject GET by ID — bypasses SOQL visibility entirely
       const sfRes = await sfFetch(
         `/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}?fields=Id,Customer_Name__c,Customer_Phone__c,Customer_Email__c`
       );
@@ -373,7 +370,7 @@ app.get("/api/demo-persona", async (_req, res) => {
       console.log("[demo-persona] No record found via any strategy");
     }
 
-    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
+    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false, debug });
   } catch (err: any) {
     console.error("[demo-persona] Error:", err.message);
     return res.status(500).json({ error: err.message });
@@ -383,7 +380,8 @@ app.get("/api/demo-persona", async (_req, res) => {
 app.put("/api/demo-persona", async (req, res) => {
   const { customerName, customerPhone, customerEmail } = req.body;
   try {
-    const recordId = await findDemoPersonaId();
+    const { id: recordId, debug } = await findDemoPersonaId();
+    console.log("[demo-persona PUT] Debug:", debug);
 
     if (recordId) {
       // Update existing record by direct PATCH
