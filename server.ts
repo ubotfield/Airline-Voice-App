@@ -299,18 +299,24 @@ app.post("/api/stt", async (req, res) => {
 
 app.get("/api/demo-persona", async (_req, res) => {
   try {
-    const query = encodeURIComponent(
-      "SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c FROM Demo_Persona__c"
-    );
+    // Get org ID first to query org-level custom setting
+    const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
+    const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
+    let orgId = "";
+    if (orgRes.ok) {
+      const orgData = await orgRes.json();
+      if (orgData.records?.length) orgId = orgData.records[0].Id;
+    }
+
+    // Query the org-level custom setting record directly by SetupOwnerId
+    const query = orgId
+      ? encodeURIComponent(`SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c FROM Demo_Persona__c WHERE SetupOwnerId = '${orgId}'`)
+      : encodeURIComponent("SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c FROM Demo_Persona__c LIMIT 1");
     const sfRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
     if (!sfRes.ok) {
       const err = await sfRes.text();
       console.error("[demo-persona] Query failed:", sfRes.status, err);
-      // Surface the actual SF error for debugging
-      return res.status(sfRes.status).json({
-        id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false,
-        _debug: { sfStatus: sfRes.status, sfError: err.substring(0, 500) }
-      });
+      return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
     }
     const data = await sfRes.json();
     if (data.records?.length) {
@@ -333,17 +339,25 @@ app.get("/api/demo-persona", async (_req, res) => {
 app.put("/api/demo-persona", async (req, res) => {
   const { customerName, customerPhone, customerEmail } = req.body;
   try {
-    // Check if record already exists
-    const query = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
+    // Get org ID to query org-level custom setting
+    const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
+    const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
+    let orgId = "";
+    if (orgRes.ok) {
+      const orgData = await orgRes.json();
+      if (orgData.records?.length) orgId = orgData.records[0].Id;
+    }
+
+    // Check if org-level record already exists
+    const query = orgId
+      ? encodeURIComponent(`SELECT Id FROM Demo_Persona__c WHERE SetupOwnerId = '${orgId}'`)
+      : encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
     const checkRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
 
     if (!checkRes.ok) {
       const err = await checkRes.text();
       console.error("[demo-persona] Check query failed:", checkRes.status, err);
-      return res.status(checkRes.status).json({
-        error: "Failed to query demo persona",
-        _debug: { sfStatus: checkRes.status, sfError: err.substring(0, 500) }
-      });
+      return res.status(checkRes.status).json({ error: "Failed to query demo persona" });
     }
 
     const checkData = await checkRes.json();
@@ -362,21 +376,14 @@ app.put("/api/demo-persona", async (req, res) => {
       if (!sfRes.ok && sfRes.status !== 204) {
         const err = await sfRes.text();
         console.error("[demo-persona] Update failed:", sfRes.status, err);
-        return res.status(sfRes.status).json({
-          error: "Failed to update demo persona",
-          _debug: { sfStatus: sfRes.status, sfError: err.substring(0, 500) }
-        });
+        return res.status(sfRes.status).json({ error: "Failed to update demo persona" });
       }
       console.log("[demo-persona] Updated record:", recordId);
       return res.json({ success: true, action: "updated", id: recordId });
     } else {
-      // Create new org-level record — get org ID dynamically
-      const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
-      const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
-      let orgId = "00DWt00000HCrmjMAD"; // fallback
-      if (orgRes.ok) {
-        const orgData = await orgRes.json();
-        if (orgData.records?.length) orgId = orgData.records[0].Id;
+      // Create new org-level record
+      if (!orgId) {
+        return res.status(500).json({ error: "Could not determine org ID" });
       }
 
       const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c`, {
@@ -391,10 +398,7 @@ app.put("/api/demo-persona", async (req, res) => {
       if (!sfRes.ok) {
         const err = await sfRes.text();
         console.error("[demo-persona] Create failed:", sfRes.status, err);
-        return res.status(sfRes.status).json({
-          error: "Failed to create demo persona",
-          _debug: { sfStatus: sfRes.status, sfError: err.substring(0, 500) }
-        });
+        return res.status(sfRes.status).json({ error: "Failed to create demo persona" });
       }
       const created = await sfRes.json();
       console.log("[demo-persona] Created record:", created.id);
