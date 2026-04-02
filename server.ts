@@ -305,17 +305,18 @@ app.post("/api/stt", async (req, res) => {
 // The SOQL query endpoint returns 401 "session not valid for API" with this
 // Connected App's Client Credentials token (an External Client App migration
 // issue), but sObject REST endpoints work fine.
-async function getDemoPersona(): Promise<{ data: any | null; error?: string }> {
+async function getDemoPersona(): Promise<{ data: any | null; error?: string; statusCode?: number }> {
   try {
     // Hierarchy Custom Settings have a special OrgDefault endpoint
     const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/OrgDefault`);
-    if (sfRes.ok) {
-      return { data: await sfRes.json() };
-    }
     const text = await sfRes.text();
+    console.log(`[demo-persona] OrgDefault: ${sfRes.status} ${text.substring(0, 300)}`);
+    if (sfRes.ok) {
+      return { data: JSON.parse(text), statusCode: sfRes.status };
+    }
     // 404 means no org-level record exists yet
-    if (sfRes.status === 404) return { data: null };
-    return { data: null, error: `${sfRes.status}: ${text.substring(0, 200)}` };
+    if (sfRes.status === 404) return { data: null, statusCode: 404 };
+    return { data: null, error: `${sfRes.status}: ${text.substring(0, 200)}`, statusCode: sfRes.status };
   } catch (e: any) {
     return { data: null, error: e.message };
   }
@@ -336,7 +337,7 @@ app.get("/api/demo-persona", async (_req, res) => {
     }
 
     if (error) console.error("[demo-persona] GET error:", error);
-    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
+    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false, _debug: error || "no record" });
   } catch (err: any) {
     console.error("[demo-persona] Error:", err.message);
     return res.status(500).json({ error: err.message });
