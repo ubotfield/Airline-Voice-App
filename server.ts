@@ -295,6 +295,126 @@ app.post("/api/stt", async (req, res) => {
   }
 });
 
+// ─── Demo Persona Routes ────────────────────────────────────────
+
+app.get("/api/demo-persona", async (_req, res) => {
+  try {
+    const query = encodeURIComponent(
+      "SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c FROM Demo_Persona__c"
+    );
+    const sfRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
+    if (!sfRes.ok) {
+      const err = await sfRes.text();
+      console.error("[demo-persona] Query failed:", sfRes.status, err);
+      return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
+    }
+    const data = await sfRes.json();
+    if (data.records?.length) {
+      const r = data.records[0];
+      return res.json({
+        id: r.Id,
+        customerName: r.Customer_Name__c || "",
+        customerPhone: r.Customer_Phone__c || "",
+        customerEmail: r.Customer_Email__c || "",
+        isConfigured: !!(r.Customer_Name__c && r.Customer_Phone__c),
+      });
+    }
+    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
+  } catch (err: any) {
+    console.error("[demo-persona] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/demo-persona", async (req, res) => {
+  const { customerName, customerPhone, customerEmail } = req.body;
+  try {
+    // Check if record already exists
+    const query = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
+    const checkRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
+    const checkData = await checkRes.json();
+
+    if (checkData.records?.length) {
+      // Update existing record
+      const recordId = checkData.records[0].Id;
+      const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          Customer_Name__c: customerName || null,
+          Customer_Phone__c: customerPhone || null,
+          Customer_Email__c: customerEmail || null,
+        }),
+      });
+      if (!sfRes.ok && sfRes.status !== 204) {
+        const err = await sfRes.text();
+        console.error("[demo-persona] Update failed:", sfRes.status, err);
+        return res.status(sfRes.status).json({ error: "Failed to update demo persona" });
+      }
+      console.log("[demo-persona] Updated record:", recordId);
+      return res.json({ success: true, action: "updated", id: recordId });
+    } else {
+      // Create new org-level record
+      const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c`, {
+        method: "POST",
+        body: JSON.stringify({
+          Customer_Name__c: customerName || null,
+          Customer_Phone__c: customerPhone || null,
+          Customer_Email__c: customerEmail || null,
+          SetupOwnerId: "00DWt00000HCrmjMAD",
+        }),
+      });
+      if (!sfRes.ok) {
+        const err = await sfRes.text();
+        console.error("[demo-persona] Create failed:", sfRes.status, err);
+        return res.status(sfRes.status).json({ error: "Failed to create demo persona" });
+      }
+      const created = await sfRes.json();
+      console.log("[demo-persona] Created record:", created.id);
+      return res.json({ success: true, action: "created", id: created.id });
+    }
+  } catch (err: any) {
+    console.error("[demo-persona] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Send Receipt Route ─────────────────────────────────────────
+
+app.post("/api/send-receipt", async (req, res) => {
+  const { orderNumber, customerEmail } = req.body;
+  if (!orderNumber || !customerEmail) {
+    return res.status(400).json({ error: "orderNumber and customerEmail are required" });
+  }
+
+  try {
+    // Call the InvocableMethod via Apex REST-like composite approach
+    // Use /services/data/vXX.0/actions/custom/apex/SendOrderReceiptService
+    const sfRes = await sfFetch(`/services/data/v62.0/actions/custom/apex/SendOrderReceiptService`, {
+      method: "POST",
+      body: JSON.stringify({
+        inputs: [{
+          orderNumber: orderNumber,
+          customerEmail: customerEmail,
+        }],
+      }),
+    });
+
+    if (!sfRes.ok) {
+      const err = await sfRes.text();
+      console.error("[send-receipt] Failed:", sfRes.status, err);
+      return res.status(sfRes.status).json({ error: "Failed to send receipt", detail: err });
+    }
+
+    const data = await sfRes.json();
+    const result = data?.[0]?.outputValues?.result || "Receipt sent";
+    console.log("[send-receipt] Result:", result);
+    return res.json({ success: true, result });
+  } catch (err: any) {
+    console.error("[send-receipt] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Health Check ────────────────────────────────────────────────
 
 app.get("/api/health", async (_req, res) => {

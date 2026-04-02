@@ -1,7 +1,14 @@
-import React from 'react';
-import { User, Settings, CreditCard, ShieldCheck, LogOut, Mic, Star } from 'lucide-react';
+import React, { useState } from 'react';
+import { User, Settings, CreditCard, ShieldCheck, LogOut, Mic, Star, ChevronRight } from 'lucide-react';
+import { PersonalInfo } from './PersonalInfo';
 
 export const Profile: React.FC = () => {
+  const [showPersonalInfo, setShowPersonalInfo] = useState(false);
+
+  if (showPersonalInfo) {
+    return <PersonalInfo onBack={() => setShowPersonalInfo(false)} />;
+  }
+
   return (
     <div className="space-y-10">
       <section className="flex items-center gap-6 p-4">
@@ -34,8 +41,18 @@ export const Profile: React.FC = () => {
       </div>
 
       <nav className="space-y-2">
+        {/* Personal Info — wired to panel */}
+        <button
+          onClick={() => setShowPersonalInfo(true)}
+          className="w-full flex items-center gap-4 px-6 py-5 text-on-surface hover:bg-surface-container-high rounded-xl transition-all font-headline font-semibold text-lg text-left"
+        >
+          <User size={24} className="text-primary" />
+          <span className="flex-1">Personal Info</span>
+          <ChevronRight size={20} className="text-on-surface/30" />
+        </button>
+
+        {/* Other nav items */}
         {[
-          { icon: User, label: "Personal Info" },
           { icon: CreditCard, label: "Payment Methods" },
           { icon: ShieldCheck, label: "Privacy & Security" },
           { icon: Settings, label: "App Settings" },
