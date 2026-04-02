@@ -296,40 +296,83 @@ app.post("/api/stt", async (req, res) => {
 });
 
 // ─── Demo Persona Routes ────────────────────────────────────────
+// Hierarchy Custom Settings are not reliably queryable via SOQL from
+// all OAuth user contexts. We use the sObject REST endpoint to
+// GET/PATCH the record directly by ID instead.
+
+// Helper: find the Demo_Persona__c record ID using multiple strategies
+async function findDemoPersonaId(): Promise<string | null> {
+  // Strategy 1: SOQL query (works when user has visibility)
+  try {
+    const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
+    const res = await sfFetch(`/services/data/v62.0/query/?q=${q}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.records?.length) return data.records[0].Id;
+    }
+  } catch { /* continue to next strategy */ }
+
+  // Strategy 2: queryAll (includes records hidden by hierarchy visibility)
+  try {
+    const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
+    const res = await sfFetch(`/services/data/v62.0/queryAll/?q=${q}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.records?.length) return data.records[0].Id;
+    }
+  } catch { /* continue to next strategy */ }
+
+  // Strategy 3: Use getUpdated to discover record IDs from the last 30 days
+  try {
+    const end = new Date().toISOString();
+    const start = new Date(Date.now() - 30 * 86400000).toISOString();
+    const res = await sfFetch(
+      `/services/data/v62.0/sobjects/Demo_Persona__c/updated/?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data.ids?.length) return data.ids[0];
+    }
+  } catch { /* continue to next strategy */ }
+
+  // Strategy 4: Use Tooling API to query CustomObject records
+  try {
+    const q = encodeURIComponent("SELECT Id, DeveloperName FROM CustomObject WHERE DeveloperName = 'Demo_Persona'");
+    const res = await sfFetch(`/services/data/v62.0/tooling/query/?q=${q}`);
+    if (res.ok) {
+      const data = await res.json();
+      console.log("[demo-persona] Tooling API result:", JSON.stringify(data).substring(0, 200));
+    }
+  } catch { /* ignore */ }
+
+  return null;
+}
 
 app.get("/api/demo-persona", async (_req, res) => {
   try {
-    // Use queryAll to bypass Hierarchy Custom Setting visibility restrictions
-    const query = encodeURIComponent(
-      "SELECT Id, Customer_Name__c, Customer_Phone__c, Customer_Email__c, SetupOwnerId FROM Demo_Persona__c"
-    );
-    const sfRes = await sfFetch(`/services/data/v62.0/queryAll/?q=${query}`);
-    if (!sfRes.ok) {
-      const err = await sfRes.text();
-      console.error("[demo-persona] queryAll failed:", sfRes.status, err);
+    const recordId = await findDemoPersonaId();
 
-      // Fallback: try direct sObject describe to list all records
-      const descRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c`);
-      if (descRes.ok) {
-        const descData = await descRes.json();
-        console.log("[demo-persona] sObject describe:", JSON.stringify(descData).substring(0, 200));
+    if (recordId) {
+      // Direct sObject GET by ID — bypasses SOQL visibility entirely
+      const sfRes = await sfFetch(
+        `/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}?fields=Id,Customer_Name__c,Customer_Phone__c,Customer_Email__c`
+      );
+      if (sfRes.ok) {
+        const r = await sfRes.json();
+        return res.json({
+          id: r.Id,
+          customerName: r.Customer_Name__c || "",
+          customerPhone: r.Customer_Phone__c || "",
+          customerEmail: r.Customer_Email__c || "",
+          isConfigured: !!(r.Customer_Name__c && r.Customer_Phone__c),
+        });
       }
+      const err = await sfRes.text();
+      console.error("[demo-persona] Direct GET failed:", sfRes.status, err);
+    } else {
+      console.log("[demo-persona] No record found via any strategy");
+    }
 
-      return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
-    }
-    const data = await sfRes.json();
-    console.log("[demo-persona] queryAll returned", data.totalSize, "records");
-    if (data.records?.length) {
-      // Prefer org-level record (SetupOwnerId starts with 00D)
-      const orgRecord = data.records.find((r: any) => r.SetupOwnerId?.startsWith("00D")) || data.records[0];
-      return res.json({
-        id: orgRecord.Id,
-        customerName: orgRecord.Customer_Name__c || "",
-        customerPhone: orgRecord.Customer_Phone__c || "",
-        customerEmail: orgRecord.Customer_Email__c || "",
-        isConfigured: !!(orgRecord.Customer_Name__c && orgRecord.Customer_Phone__c),
-      });
-    }
     return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
   } catch (err: any) {
     console.error("[demo-persona] Error:", err.message);
@@ -340,22 +383,10 @@ app.get("/api/demo-persona", async (_req, res) => {
 app.put("/api/demo-persona", async (req, res) => {
   const { customerName, customerPhone, customerEmail } = req.body;
   try {
-    // Use queryAll to find org-level record (bypasses Hierarchy Custom Setting visibility)
-    const query = encodeURIComponent("SELECT Id, SetupOwnerId FROM Demo_Persona__c");
-    const checkRes = await sfFetch(`/services/data/v62.0/queryAll/?q=${query}`);
+    const recordId = await findDemoPersonaId();
 
-    if (!checkRes.ok) {
-      const err = await checkRes.text();
-      console.error("[demo-persona] queryAll failed:", checkRes.status, err);
-      return res.status(checkRes.status).json({ error: "Failed to query demo persona" });
-    }
-
-    const checkData = await checkRes.json();
-
-    if (checkData.records?.length) {
-      // Prefer org-level record (SetupOwnerId starts with 00D)
-      const orgRecord = checkData.records.find((r: any) => r.SetupOwnerId?.startsWith("00D")) || checkData.records[0];
-      const recordId = orgRecord.Id;
+    if (recordId) {
+      // Update existing record by direct PATCH
       const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -367,12 +398,12 @@ app.put("/api/demo-persona", async (req, res) => {
       if (!sfRes.ok && sfRes.status !== 204) {
         const err = await sfRes.text();
         console.error("[demo-persona] Update failed:", sfRes.status, err);
-        return res.status(sfRes.status).json({ error: "Failed to update demo persona" });
+        return res.status(sfRes.status).json({ error: "Failed to update demo persona", details: err.substring(0, 200) });
       }
       console.log("[demo-persona] Updated record:", recordId);
       return res.json({ success: true, action: "updated", id: recordId });
     } else {
-      // Create new org-level record — get org ID dynamically
+      // Create new org-level record
       const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
       const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
       let orgId = "";
@@ -396,7 +427,7 @@ app.put("/api/demo-persona", async (req, res) => {
       if (!sfRes.ok) {
         const err = await sfRes.text();
         console.error("[demo-persona] Create failed:", sfRes.status, err);
-        return res.status(sfRes.status).json({ error: "Failed to create demo persona" });
+        return res.status(sfRes.status).json({ error: "Failed to create demo persona", details: err.substring(0, 200) });
       }
       const created = await sfRes.json();
       console.log("[demo-persona] Created record:", created.id);
