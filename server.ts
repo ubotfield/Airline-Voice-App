@@ -42,7 +42,7 @@ const AGENT_API_BASE = "https://api.salesforce.com";
 // ─── LLM Gateway TTS config ────────────────────────────────────────
 const LLM_GATEWAY_TTS_URL =
   process.env.LLM_GATEWAY_TTS_URL || "wss://bot-svc-llm.sfproxy.einstein.aws-dev4-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
-const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || "";
+const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || process.env.LLM_GW_API_KEY || "";
 const TTS_VOICE = process.env.TTS_VOICE || "Kore";
 const TTS_MODEL = process.env.TTS_MODEL || "gemini-2.5-flash-tts";
 
