@@ -4,8 +4,8 @@
  *   Strategy A (Safari browser only): Web Speech API (SpeechRecognition)
  *   Strategy B (Everything else): MediaRecorder -> server-side Gemini STT
  *
- * TTS: LLM Gateway (high-quality Gemini voices like Kore/Aoede) with
- * browser-native speechSynthesis as fallback when gateway is not configured.
+ * TTS: Salesforce LLM Gateway (high-quality Gemini voices like Kore/Aoede)
+ * with triple-fallback: <audio> element → AudioContext → browser speechSynthesis.
  *
  * KEY DESIGN (v3 — iOS-proof):
  *   - MediaRecorder pipeline is COMPLETELY INDEPENDENT of AudioContext.
@@ -640,108 +640,106 @@ export class NativeVoiceService {
   }
 
   // ===================================================================
-  // TTS: LLM Gateway (high-quality Gemini voice) with browser fallback
+  // TTS: Salesforce LLM Gateway TTS with triple-fallback playback
   // ===================================================================
 
-  // AudioContext for PCM playback — reused across calls
-  private ttsAudioContext: AudioContext | null = null;
+  // Dedicated AudioContext for TTS playback (separate from volume monitoring)
+  private playbackContext: AudioContext | null = null;
 
   private async speakText(text: string): Promise<void> {
-    if (!this._isConnected) return;
+    const MAX_CLIENT_RETRIES = 2;
 
-    // Try server-side LLM Gateway TTS first (high-quality Gemini voice)
-    try {
-      dbg(`Trying LLM Gateway TTS: "${text.substring(0, 60)}..."`);
-      const played = await this.speakWithServerTTS(text);
-      if (played) return;
-    } catch (err: any) {
-      dbg(`Server TTS failed: ${err?.message} — falling back to browser`);
-    }
+    // Ensure playback AudioContext is alive and running before any TTS attempt.
+    // iOS suspends AudioContext when app backgrounds or after prolonged inactivity.
+    await this.ensurePlaybackContext();
 
-    // Fallback: browser-native speechSynthesis
-    if ("speechSynthesis" in window) {
-      dbg(`Falling back to browser TTS: "${text.substring(0, 60)}..."`);
-      await this.speakWithBrowserTTS(text);
-    }
-  }
+    for (let attempt = 1; attempt <= MAX_CLIENT_RETRIES; attempt++) {
+      if (!this._isConnected) return;
 
-  /**
-   * Play audio via LLM Gateway TTS (server-side proxy).
-   * Returns true if audio was played successfully, false if server TTS not available.
-   */
-  private async speakWithServerTTS(text: string): Promise<boolean> {
-    const res = await fetch(apiUrl("/api/tts"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
+      try {
+        dbg(`Fetching TTS (attempt ${attempt}/${MAX_CLIENT_RETRIES}): ${text.substring(0, 60)}`);
+        const res = await fetch(apiUrl("/api/tts"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
 
-    if (!res.ok) {
-      // 503 = TTS not configured, fall back silently
-      if (res.status === 503) {
-        dbg("Server TTS not configured (no API key) — will use browser");
-        return false;
+        if (res.ok) {
+          const contentType = res.headers.get("content-type") || "audio/mpeg";
+          const audioData = await res.arrayBuffer();
+          dbg(`TTS response: ${audioData.byteLength} bytes, ${contentType}`);
+
+          if (audioData.byteLength > 0) {
+            // Try 1: <audio> element (most reliable on iOS)
+            try {
+              await this.playAudioViaElement(audioData, contentType);
+              dbg("<audio> element playback succeeded");
+              return;
+            } catch (e: any) {
+              dbg(`<audio> element failed, trying AudioContext: ${e?.message}`);
+            }
+
+            // Try 2: AudioContext (resume again just in case)
+            await this.ensurePlaybackContext();
+            try {
+              await this.playAudioBuffer(audioData);
+              dbg("AudioContext playback succeeded");
+              return;
+            } catch (e: any) {
+              dbg(`AudioContext failed: ${e?.message}`);
+            }
+
+            break; // Audio data OK but playback failed — try browser TTS
+          }
+        } else {
+          dbg(`Server TTS HTTP ${res.status} (attempt ${attempt})`);
+          if (attempt < MAX_CLIENT_RETRIES) {
+            await new Promise(r => setTimeout(r, 150));
+            continue;
+          }
+        }
+      } catch (err: any) {
+        dbg(`Server TTS error (attempt ${attempt}): ${err?.message}`);
+        if (attempt < MAX_CLIENT_RETRIES) {
+          await new Promise(r => setTimeout(r, 150));
+          continue;
+        }
       }
-      const errText = await res.text().catch(() => "unknown error");
-      throw new Error(`TTS HTTP ${res.status}: ${errText.substring(0, 200)}`);
     }
 
-    // Response is raw PCM: Linear16, 24kHz, mono
-    const arrayBuffer = await res.arrayBuffer();
-    if (arrayBuffer.byteLength < 100) {
-      dbg("Server TTS returned tiny audio — falling back");
-      return false;
+    // Final fallback: browser speechSynthesis
+    if (!this._isConnected) return;
+    dbg("Server TTS failed, falling back to browser speechSynthesis");
+    try {
+      await this.speakWithBrowserTTS(text);
+    } catch (err: any) {
+      dbg(`All TTS methods failed: ${err?.message}`);
     }
-
-    dbg(`Got ${arrayBuffer.byteLength} bytes PCM from server TTS`);
-    await this.playPCM(arrayBuffer, 24000);
-    return true;
   }
 
   /**
-   * Play raw PCM (signed 16-bit little-endian, mono) via Web Audio API.
+   * Ensure the playback AudioContext exists and is in "running" state.
+   * iOS suspends AudioContext on background, page visibility changes, or after TTS.
    */
-  private async playPCM(pcmBuffer: ArrayBuffer, sampleRate: number): Promise<void> {
-    // Create/reuse AudioContext for TTS playback
-    if (!this.ttsAudioContext || this.ttsAudioContext.state === "closed") {
-      this.ttsAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate });
+  private async ensurePlaybackContext(): Promise<void> {
+    try {
+      if (!this.playbackContext || this.playbackContext.state === "closed") {
+        dbg("Creating fresh playback AudioContext");
+        this.playbackContext = new AudioContext();
+      }
+      if (this.playbackContext.state === "suspended") {
+        dbg("Resuming suspended playback AudioContext");
+        await this.playbackContext.resume();
+      }
+    } catch (err: any) {
+      dbg(`ensurePlaybackContext failed: ${err?.message}`);
+      try {
+        this.playbackContext = new AudioContext();
+        await this.playbackContext.resume();
+      } catch (e: any) {
+        dbg(`Cannot create AudioContext at all: ${e?.message}`);
+      }
     }
-    if (this.ttsAudioContext.state === "suspended") {
-      await this.ttsAudioContext.resume();
-    }
-
-    // Convert signed 16-bit PCM to Float32 for Web Audio API
-    const pcmData = new Int16Array(pcmBuffer);
-    const float32 = new Float32Array(pcmData.length);
-    for (let i = 0; i < pcmData.length; i++) {
-      float32[i] = pcmData[i] / 32768;
-    }
-
-    // Create audio buffer and play
-    const audioBuffer = this.ttsAudioContext.createBuffer(1, float32.length, sampleRate);
-    audioBuffer.getChannelData(0).set(float32);
-
-    return new Promise<void>((resolve) => {
-      const source = this.ttsAudioContext!.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(this.ttsAudioContext!.destination);
-      source.onended = () => resolve();
-
-      // Safety timeout
-      const estimatedMs = (float32.length / sampleRate) * 1000 + 1000;
-      const timeout = setTimeout(() => {
-        dbg("PCM playback safety timeout");
-        try { source.stop(); } catch { /* ignore */ }
-        resolve();
-      }, estimatedMs);
-
-      source.onended = () => {
-        clearTimeout(timeout);
-        resolve();
-      };
-
-      source.start(0);
-    });
   }
 
   private speakWithBrowserTTS(text: string): Promise<void> {
@@ -757,16 +755,13 @@ export class NativeVoiceService {
         resolve();
       };
 
-      // Cancel any existing speech
       window.speechSynthesis.cancel();
 
-      // Safety timeout — scale with text length, min 5s, max 30s
-      const estimatedDuration = Math.max(5000, Math.min(30000, text.length * 80));
       const timeout = setTimeout(() => {
-        dbg(`Browser TTS timed out after ${estimatedDuration}ms`);
+        dbg("Browser TTS timed out after 5s");
         window.speechSynthesis.cancel();
         finish();
-      }, estimatedDuration);
+      }, 5000);
 
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1.0;
@@ -774,7 +769,6 @@ export class NativeVoiceService {
       utterance.volume = 1.0;
       utterance.lang = "en-US";
 
-      // Use preferred voice if available
       if (this.preferredVoice) {
         utterance.voice = this.preferredVoice;
       }
@@ -782,7 +776,6 @@ export class NativeVoiceService {
       utterance.onend = finish;
       utterance.onerror = () => finish();
 
-      // iOS workaround: keep-alive ping to prevent speechSynthesis from pausing
       const iosKeepAlive = setInterval(() => {
         if (window.speechSynthesis.speaking) {
           window.speechSynthesis.pause();
@@ -791,6 +784,95 @@ export class NativeVoiceService {
       }, 3000);
 
       window.speechSynthesis.speak(utterance);
+    });
+  }
+
+  private playAudioViaElement(data: ArrayBuffer, mimeType: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        const blob = new Blob([data], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+
+        let settled = false;
+        const finish = (success: boolean, reason?: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(safetyTimeout);
+          URL.revokeObjectURL(url);
+          if (success) resolve(); else reject(reason);
+        };
+
+        // Safety timeout: 15s max
+        const safetyTimeout = setTimeout(() => {
+          dbg("<audio> playback timed out after 15s");
+          try { audio.pause(); } catch { /* ignore */ }
+          finish(true);
+        }, 15000);
+
+        audio.onended = () => finish(true);
+        audio.onerror = (e) => finish(false, e);
+
+        const playPromise = audio.play();
+        if (playPromise) {
+          playPromise.catch((err) => finish(false, err));
+        }
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  private async playAudioBuffer(data: ArrayBuffer): Promise<void> {
+    if (!this.playbackContext || this.playbackContext.state === "closed") {
+      this.playbackContext = new AudioContext();
+    }
+    if (this.playbackContext.state === "suspended") {
+      await this.playbackContext.resume();
+    }
+
+    const audioBuffer = await this.playbackContext.decodeAudioData(data.slice(0));
+
+    // Add a DynamicsCompressor to normalize volume
+    const compressor = this.playbackContext.createDynamicsCompressor();
+    compressor.threshold.setValueAtTime(-20, this.playbackContext.currentTime);
+    compressor.knee.setValueAtTime(10, this.playbackContext.currentTime);
+    compressor.ratio.setValueAtTime(8, this.playbackContext.currentTime);
+    compressor.attack.setValueAtTime(0.003, this.playbackContext.currentTime);
+    compressor.release.setValueAtTime(0.15, this.playbackContext.currentTime);
+
+    // Add a GainNode for consistent output level
+    const gainNode = this.playbackContext.createGain();
+    gainNode.gain.setValueAtTime(1.3, this.playbackContext.currentTime);
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(safetyTimeout);
+        resolve();
+      };
+
+      const timeoutMs = Math.max(10000, (audioBuffer.duration + 5) * 1000);
+      const safetyTimeout = setTimeout(() => {
+        dbg(`AudioContext playback timed out after ${timeoutMs}ms`);
+        finish();
+      }, timeoutMs);
+
+      try {
+        const source = this.playbackContext!.createBufferSource();
+        source.buffer = audioBuffer;
+        // Route: source → compressor → gain → speakers
+        source.connect(compressor);
+        compressor.connect(gainNode);
+        gainNode.connect(this.playbackContext!.destination);
+        source.onended = () => finish();
+        source.start();
+      } catch (err) {
+        clearTimeout(safetyTimeout);
+        reject(err);
+      }
     });
   }
 
@@ -875,8 +957,8 @@ export class NativeVoiceService {
     try { this.audioContext?.close(); } catch { /* ignore */ }
     this.audioContext = null;
 
-    try { this.ttsAudioContext?.close(); } catch { /* ignore */ }
-    this.ttsAudioContext = null;
+    try { this.playbackContext?.close(); } catch { /* ignore */ }
+    this.playbackContext = null;
 
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 

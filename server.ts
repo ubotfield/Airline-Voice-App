@@ -39,43 +39,6 @@ const SF_AGENT_ID = (process.env.SF_AGENT_ID || process.env.AGENT_ID)!;
 // ╚════════════════════════════════════════════════════════════════════╝
 const AGENT_API_BASE = "https://api.salesforce.com";
 
-// ─── LLM Gateway TTS config ────────────────────────────────────────
-const LLM_GATEWAY_TTS_URL =
-  process.env.LLM_GATEWAY_TTS_URL || "wss://bot-svc-llm.sfproxy.einstein.aws-dev4-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
-const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || process.env.LLM_GW_API_KEY || "";
-const TTS_VOICE = process.env.TTS_VOICE || "Kore";
-const TTS_MODEL = process.env.TTS_MODEL || "gemini-2.5-flash-tts";
-
-// Tenant ID: format is core/<instance>/<orgId>
-// e.g. core/storm-97d6c78c328e07/00DWt00000HCrmjMAD
-const LLM_GATEWAY_TENANT_ID = process.env.LLM_GATEWAY_TENANT_ID || "";
-let resolvedTenantId = LLM_GATEWAY_TENANT_ID;
-
-// Auto-resolve tenant ID once we have an org ID from the OAuth token
-async function getResolvedTenantId(): Promise<string> {
-  if (resolvedTenantId) return resolvedTenantId;
-  try {
-    const { accessToken, instanceUrl } = await getAccessToken();
-    // Get Org ID from Salesforce
-    const orgRes = await fetch(`${instanceUrl}/services/data/v62.0/query/?q=${encodeURIComponent("SELECT Id FROM Organization LIMIT 1")}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (orgRes.ok) {
-      const data = await orgRes.json();
-      const orgId = data.records?.[0]?.Id;
-      if (orgId) {
-        const url = new URL(instanceUrl);
-        const instance = url.hostname.split(".")[0];
-        resolvedTenantId = `core/${instance}/${orgId}`;
-        console.log(`[tts] Auto-resolved tenant ID: ${resolvedTenantId}`);
-      }
-    }
-  } catch (err: any) {
-    console.warn(`[tts] Could not auto-resolve tenant ID: ${err?.message}`);
-  }
-  return resolvedTenantId;
-}
-
 // ─── Token cache ─────────────────────────────────────────────────
 let cachedToken: string | null = null;
 let cachedInstanceUrl: string | null = null;
@@ -333,135 +296,182 @@ app.post("/api/stt", async (req, res) => {
   }
 });
 
-// ─── TTS: LLM Gateway (high-quality Gemini voices) ──────────────
+// ─── TTS: LLM Gateway (high-quality Gemini voices via WebSocket) ──────────────
+
+const LLM_GW_TTS_URL =
+  process.env.LLM_GW_TTS_URL ||
+  "wss://bot-svc-llm.sfproxy.einsteintest1.test1-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
+const LLM_GW_TTS_URL_FALLBACK =
+  process.env.LLM_GW_TTS_URL_FALLBACK ||
+  "wss://bot-svc-llm.sfproxy.einstein.aws-dev4-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
+const LLM_GW_API_KEY = process.env.LLM_GW_API_KEY;
+const LLM_GW_TENANT_ID = process.env.LLM_GW_TENANT_ID; // e.g. core/falcontest1-core4sdb6/<orgId>
+const LLM_GW_FEATURE_ID = process.env.LLM_GW_FEATURE_ID || "api-key-exploratory";
+const LLM_GW_APP_CONTEXT = process.env.LLM_GW_APP_CONTEXT || "EinsteinGPT";
+const LLM_GW_VOICE = process.env.LLM_GW_VOICE || "Kore";
+const LLM_GW_MODEL = process.env.LLM_GW_MODEL || "gemini-2.5-flash-tts";
+
+/** Create a 44-byte WAV header for Linear16 PCM data (24kHz, 16-bit, mono) */
+function createWavHeader(pcmByteLength: number): Buffer {
+  const sampleRate = 24000;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);                          // ChunkID
+  header.writeUInt32LE(36 + pcmByteLength, 4);      // ChunkSize
+  header.write("WAVE", 8);                          // Format
+  header.write("fmt ", 12);                         // Subchunk1ID
+  header.writeUInt32LE(16, 16);                     // Subchunk1Size (PCM)
+  header.writeUInt16LE(1, 20);                      // AudioFormat (1 = PCM)
+  header.writeUInt16LE(numChannels, 22);            // NumChannels
+  header.writeUInt32LE(sampleRate, 24);             // SampleRate
+  header.writeUInt32LE(byteRate, 28);               // ByteRate
+  header.writeUInt16LE(blockAlign, 32);             // BlockAlign
+  header.writeUInt16LE(bitsPerSample, 34);          // BitsPerSample
+  header.write("data", 36);                         // Subchunk2ID
+  header.writeUInt32LE(pcmByteLength, 40);          // Subchunk2Size
+  return header;
+}
+
+/**
+ * Open a WebSocket to the LLM Gateway TTS endpoint, send text, collect PCM audio.
+ * Returns a Buffer containing a complete WAV file.
+ */
+function synthesizeViaTTSGateway(text: string, voice: string, wsUrl: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl, {
+      headers: {
+        "Authorization": `API_KEY ${LLM_GW_API_KEY}`,
+        "x-sfdc-core-tenant-id": LLM_GW_TENANT_ID!,
+        "x-client-feature-id": LLM_GW_FEATURE_ID,
+        "x-sfdc-app-context": LLM_GW_APP_CONTEXT,
+      },
+    });
+
+    const pcmChunks: Buffer[] = [];
+    let completed = false;
+
+    // 15s total timeout — if gateway hangs, bail out
+    const timeout = setTimeout(() => {
+      if (!completed) {
+        completed = true;
+        try { ws.close(); } catch { /* ignore */ }
+        reject(new Error("TTS gateway timed out after 15s"));
+      }
+    }, 15000);
+
+    ws.on("open", () => {
+      console.log("[tts] WebSocket connected to gateway");
+    });
+
+    ws.on("message", (data: WebSocket.Data, isBinary: boolean) => {
+      if (completed) return;
+
+      if (isBinary) {
+        // Binary frame = raw PCM audio chunk
+        pcmChunks.push(Buffer.from(data as Buffer));
+      } else {
+        // Text frame = JSON control message
+        try {
+          const msg = JSON.parse(data.toString());
+
+          if (msg.status === "ready") {
+            console.log(`[tts] Gateway ready — sending TTS request (voice: ${voice})`);
+            // Send the TTS request
+            ws.send(JSON.stringify({
+              model: LLM_GW_MODEL,
+              input: text,
+              voice: voice,
+            }));
+          } else if (msg.status === "completed") {
+            completed = true;
+            clearTimeout(timeout);
+            console.log(`[tts] Synthesis complete: ${msg.audioInfo || "no info"}`);
+
+            // Combine all PCM chunks and wrap in WAV header
+            const pcmData = Buffer.concat(pcmChunks);
+            const wavHeader = createWavHeader(pcmData.length);
+            const wavFile = Buffer.concat([wavHeader, pcmData]);
+
+            ws.close();
+            resolve(wavFile);
+          } else if (msg.error) {
+            completed = true;
+            clearTimeout(timeout);
+            console.error("[tts] Gateway error:", msg.message || msg.error);
+            ws.close();
+            reject(new Error(msg.message || msg.error));
+          }
+        } catch (parseErr) {
+          console.warn("[tts] Non-JSON text message:", data.toString().substring(0, 200));
+        }
+      }
+    });
+
+    ws.on("error", (err) => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timeout);
+        console.error("[tts] WebSocket error:", err.message);
+        reject(err);
+      }
+    });
+
+    ws.on("close", (code, reason) => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timeout);
+        const reasonStr = reason?.toString() || "unknown";
+        console.warn(`[tts] WebSocket closed unexpectedly: ${code} ${reasonStr}`);
+        reject(new Error(`WebSocket closed: ${code} ${reasonStr}`));
+      }
+    });
+  });
+}
 
 app.post("/api/tts", async (req, res) => {
   const { text, voice } = req.body;
-  if (!text) return res.status(400).json({ error: "text is required" });
-
-  if (!LLM_GATEWAY_API_KEY) {
-    console.warn("[tts] No LLM_GATEWAY_API_KEY — falling back to empty response");
-    return res.status(503).json({ error: "TTS not configured" });
+  if (!text) {
+    return res.status(400).json({ error: "text is required" });
   }
 
-  const ttsStart = Date.now();
+  if (!LLM_GW_API_KEY || !LLM_GW_TENANT_ID) {
+    console.warn("[tts] Missing LLM_GW_API_KEY or LLM_GW_TENANT_ID — returning 503");
+    return res.status(503).json({ error: "TTS not configured (missing gateway credentials)" });
+  }
 
-  try {
-    const audioChunks: Buffer[] = [];
+  const selectedVoice = voice || LLM_GW_VOICE;
+  const endpoints = [LLM_GW_TTS_URL, LLM_GW_TTS_URL_FALLBACK];
 
-    // Resolve tenant ID (auto-derives from org if not set)
-    const tenantId = await getResolvedTenantId();
+  for (let i = 0; i < endpoints.length; i++) {
+    const wsUrl = endpoints[i];
+    const label = i === 0 ? "primary" : "fallback";
 
-    await new Promise<void>((resolve, reject) => {
-      const wsHeaders: Record<string, string> = {
-        Authorization: `API_KEY ${LLM_GATEWAY_API_KEY}`,
-        "x-client-feature-id": "Service replies",
-        "x-app-type": "DeveloperGPT",
-      };
-      if (tenantId) {
-        wsHeaders["x-sfdc-core-tenant-id"] = tenantId;
+    try {
+      const ttsStart = Date.now();
+      console.log(`[tts] Gateway TTS (${label}): "${text.substring(0, 60)}..." (voice: ${selectedVoice})`);
+
+      const wavBuffer = await synthesizeViaTTSGateway(text, selectedVoice, wsUrl);
+      const elapsed = Date.now() - ttsStart;
+      console.log(`[tts] Got WAV audio: ${wavBuffer.length} bytes (${elapsed}ms, ${label})`);
+
+      res.set("Content-Type", "audio/wav");
+      res.set("Content-Length", String(wavBuffer.length));
+      return res.send(wavBuffer);
+    } catch (err: any) {
+      console.error(`[tts] ${label} endpoint failed:`, err.message);
+      if (i < endpoints.length - 1) {
+        console.log("[tts] Trying fallback endpoint...");
+        continue;
       }
-
-      console.log(`[tts] Connecting to ${LLM_GATEWAY_TTS_URL}`);
-      console.log(`[tts] Headers: tenant=${tenantId || "NONE"}, apiKey=${LLM_GATEWAY_API_KEY ? LLM_GATEWAY_API_KEY.substring(0, 8) + "..." : "NONE"}`);
-      const ws = new WebSocket(LLM_GATEWAY_TTS_URL, { headers: wsHeaders });
-
-      const timeout = setTimeout(() => {
-        console.error("[tts] WebSocket handshake timeout after 15s");
-        ws.terminate();
-        reject(new Error("TTS WebSocket timeout after 15s"));
-      }, 15000);
-
-      let requestSent = false;
-      const sendTTSRequest = () => {
-        if (requestSent) return;
-        requestSent = true;
-        console.log("[tts] Sending TTS request");
-        ws.send(JSON.stringify({
-          model: TTS_MODEL,
-          input: text.substring(0, 5000),
-          voice: voice || TTS_VOICE,
-        }));
-      };
-
-      ws.on("open", () => {
-        console.log("[tts] WebSocket connected — waiting for ready signal");
-        // Per protocol: wait for server "ready" message before sending request
-        // But set a fallback timer in case "ready" never comes
-        setTimeout(() => {
-          if (!requestSent) {
-            console.log("[tts] No ready signal after 2s — sending request anyway");
-            sendTTSRequest();
-          }
-        }, 2000);
-      });
-
-      ws.on("message", (data: WebSocket.Data, isBinary: boolean) => {
-        if (isBinary) {
-          audioChunks.push(Buffer.from(data as Buffer));
-        } else {
-          const msgStr = data.toString();
-          console.log("[tts] Received JSON:", msgStr.substring(0, 300));
-          try {
-            const msg = JSON.parse(msgStr);
-            if (msg.status === "ready") {
-              console.log("[tts] Gateway ready signal received");
-              sendTTSRequest();
-            } else if (msg.status === "completed") {
-              clearTimeout(timeout);
-              ws.close();
-              resolve();
-            } else if (msg.error) {
-              clearTimeout(timeout);
-              ws.close();
-              reject(new Error(msg.message || msg.error));
-            }
-          } catch { /* ignore parse errors */ }
-        }
-      });
-
-      ws.on("error", (err: any) => {
-        console.error("[tts] WebSocket error:", err?.message || err);
-        clearTimeout(timeout);
-        reject(err);
-      });
-
-      ws.on("close", (code, reason) => {
-        console.log(`[tts] WebSocket closed: code=${code} reason=${reason?.toString() || "none"}`);
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      ws.on("unexpected-response", (_req: any, res: any) => {
-        let body = "";
-        res.on("data", (chunk: any) => body += chunk);
-        res.on("end", () => {
-          console.error(`[tts] Unexpected HTTP response: ${res.statusCode} ${res.statusMessage} body=${body.substring(0, 500)}`);
-          clearTimeout(timeout);
-          reject(new Error(`TTS gateway returned HTTP ${res.statusCode}: ${body.substring(0, 200)}`));
-        });
-      });
-    });
-
-    if (audioChunks.length === 0) {
-      console.error("[tts] No audio chunks received");
-      return res.status(502).json({ error: "No audio received from TTS" });
+      return res.status(502).json({ error: "TTS generation failed", detail: err.message });
     }
-
-    const pcmBuffer = Buffer.concat(audioChunks);
-    console.log(`[tts] Generated ${pcmBuffer.length} bytes PCM in ${Date.now() - ttsStart}ms (${audioChunks.length} chunks)`);
-
-    // Return raw PCM audio (Linear16, 24kHz, mono)
-    res.set({
-      "Content-Type": "audio/L16;codec=pcm;rate=24000",
-      "Content-Length": pcmBuffer.length.toString(),
-      "X-Audio-Format": "pcm-s16le-24000-mono",
-    });
-    return res.send(pcmBuffer);
-  } catch (err: any) {
-    console.error("[tts] Error:", err.message);
-    return res.status(502).json({ error: "TTS failed", detail: err.message });
   }
+
+  return res.status(502).json({ error: "TTS failed on all endpoints" });
 });
 
 // ─── Demo Persona Routes ────────────────────────────────────────
@@ -543,12 +553,11 @@ app.get("/api/health", async (_req, res) => {
     loginUrl: SF_LOGIN_URL || "not set",
     agentId: SF_AGENT_ID ? `${SF_AGENT_ID.substring(0, 8)}...` : "not set",
     tts: {
-      provider: LLM_GATEWAY_API_KEY ? "llm-gateway" : "browser-native",
-      voice: TTS_VOICE,
-      model: TTS_MODEL,
-      gatewayConfigured: !!LLM_GATEWAY_API_KEY,
-      tenantId: resolvedTenantId || "(will auto-resolve on first TTS call)",
-      gatewayUrl: LLM_GATEWAY_TTS_URL,
+      provider: "llm-gateway",
+      keySet: !!LLM_GW_API_KEY,
+      tenantIdSet: !!LLM_GW_TENANT_ID,
+      voice: LLM_GW_VOICE,
+      model: LLM_GW_MODEL,
     },
     stt: {
       primary: "web-speech-api",
@@ -600,8 +609,7 @@ app.listen(PORT, () => {
   console.log(`   Agent ID: ${SF_AGENT_ID || "NOT SET"}`);
   console.log(`   Instance: ${SF_LOGIN_URL}`);
   console.log(`   Auth: ${SF_CLIENT_ID && SF_CLIENT_SECRET ? "Configured ✓" : "⚠️  Missing credentials"}`);
-  console.log(`   TTS: ${LLM_GATEWAY_API_KEY ? `LLM Gateway (${TTS_VOICE} voice) ✓` : "Browser Native (speechSynthesis) — no LLM_GATEWAY_API_KEY"}`);
-  console.log(`   TTS Gateway: ${LLM_GATEWAY_API_KEY ? "Configured ✓" : "⚠️  Set LLM_GATEWAY_API_KEY for high-quality voice"}`);
-  console.log(`   STT: Web Speech API (primary) + Gemini (fallback) ${process.env.GEMINI_API_KEY ? "✓" : "⚠️  No GEMINI_API_KEY"}`);
-  console.log(`   V2 Changes: LLM Gateway TTS (Gemini voices) with browser-native fallback\n`);
+  console.log(`   TTS: ${LLM_GW_API_KEY ? `LLM Gateway (${LLM_GW_VOICE} voice) ✓` : "⚠️  No LLM_GW_API_KEY — TTS disabled"}`);
+  console.log(`   TTS Tenant: ${LLM_GW_TENANT_ID ? `${LLM_GW_TENANT_ID} ✓` : "⚠️  No LLM_GW_TENANT_ID"}`);
+  console.log(`   STT: Web Speech API (primary) + Gemini (fallback) ${process.env.GEMINI_API_KEY ? "✓" : "⚠️  No GEMINI_API_KEY"}\n`);
 });
