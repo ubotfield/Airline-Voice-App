@@ -43,6 +43,7 @@ const AGENT_API_BASE = "https://api.salesforce.com";
 const LLM_GATEWAY_TTS_URL =
   process.env.LLM_GATEWAY_TTS_URL || "wss://bot-svc-llm.sfproxy.einstein.aws-dev4-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
 const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || process.env.LLM_GW_API_KEY || "";
+const LLM_GATEWAY_TENANT_ID = process.env.LLM_GATEWAY_TENANT_ID || "";
 const TTS_VOICE = process.env.TTS_VOICE || "Kore";
 const TTS_MODEL = process.env.TTS_MODEL || "gemini-2.5-flash-tts";
 
@@ -320,37 +321,60 @@ app.post("/api/tts", async (req, res) => {
     const audioChunks: Buffer[] = [];
 
     await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(LLM_GATEWAY_TTS_URL, {
-        headers: {
-          Authorization: `API_KEY ${LLM_GATEWAY_API_KEY}`,
-          "x-client-feature-id": "Scotts Kitchen Voice",
-          "x-app-type": "ScottsQSR",
-        },
-      });
+      const wsHeaders: Record<string, string> = {
+        Authorization: `API_KEY ${LLM_GATEWAY_API_KEY}`,
+        "x-client-feature-id": "Service replies",
+        "x-app-type": "DeveloperGPT",
+      };
+      if (LLM_GATEWAY_TENANT_ID) {
+        wsHeaders["x-sfdc-core-tenant-id"] = LLM_GATEWAY_TENANT_ID;
+      }
+
+      console.log(`[tts] Connecting to ${LLM_GATEWAY_TTS_URL} ...`);
+      const ws = new WebSocket(LLM_GATEWAY_TTS_URL, { headers: wsHeaders });
 
       const timeout = setTimeout(() => {
-        ws.close();
-        reject(new Error("TTS timeout after 15s"));
+        console.error("[tts] WebSocket handshake timeout after 15s");
+        ws.terminate();
+        reject(new Error("TTS WebSocket timeout after 15s"));
       }, 15000);
 
-      ws.on("open", () => {
-        // Send TTS request
+      let requestSent = false;
+      const sendTTSRequest = () => {
+        if (requestSent) return;
+        requestSent = true;
+        console.log("[tts] Sending TTS request");
         ws.send(JSON.stringify({
           model: TTS_MODEL,
           input: text.substring(0, 5000),
           voice: voice || TTS_VOICE,
         }));
+      };
+
+      ws.on("open", () => {
+        console.log("[tts] WebSocket connected — waiting for ready signal");
+        // Per protocol: wait for server "ready" message before sending request
+        // But set a fallback timer in case "ready" never comes
+        setTimeout(() => {
+          if (!requestSent) {
+            console.log("[tts] No ready signal after 2s — sending request anyway");
+            sendTTSRequest();
+          }
+        }, 2000);
       });
 
       ws.on("message", (data: WebSocket.Data, isBinary: boolean) => {
         if (isBinary) {
-          // Binary frame = PCM audio chunk
           audioChunks.push(Buffer.from(data as Buffer));
         } else {
-          // Text frame = JSON status message
+          const msgStr = data.toString();
+          console.log("[tts] Received JSON:", msgStr.substring(0, 300));
           try {
-            const msg = JSON.parse(data.toString());
-            if (msg.status === "completed") {
+            const msg = JSON.parse(msgStr);
+            if (msg.status === "ready") {
+              console.log("[tts] Gateway ready signal received");
+              sendTTSRequest();
+            } else if (msg.status === "completed") {
               clearTimeout(timeout);
               ws.close();
               resolve();
@@ -359,20 +383,30 @@ app.post("/api/tts", async (req, res) => {
               ws.close();
               reject(new Error(msg.message || msg.error));
             }
-            // "ready" status = ignore, wait for our request to be processed
           } catch { /* ignore parse errors */ }
         }
       });
 
-      ws.on("error", (err) => {
+      ws.on("error", (err: any) => {
+        console.error("[tts] WebSocket error:", err?.message || err);
         clearTimeout(timeout);
         reject(err);
       });
 
-      ws.on("close", () => {
+      ws.on("close", (code, reason) => {
+        console.log(`[tts] WebSocket closed: code=${code} reason=${reason?.toString() || "none"}`);
         clearTimeout(timeout);
-        // If we haven't resolved yet, resolve with whatever we have
         resolve();
+      });
+
+      ws.on("unexpected-response", (_req: any, res: any) => {
+        let body = "";
+        res.on("data", (chunk: any) => body += chunk);
+        res.on("end", () => {
+          console.error(`[tts] Unexpected HTTP response: ${res.statusCode} ${res.statusMessage} body=${body.substring(0, 500)}`);
+          clearTimeout(timeout);
+          reject(new Error(`TTS gateway returned HTTP ${res.statusCode}: ${body.substring(0, 200)}`));
+        });
       });
     });
 
