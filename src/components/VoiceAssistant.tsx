@@ -116,6 +116,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             }
             setStatus("Processing...");
             const response = await agentRef.current.sendMessage(userText);
+
+            // Auto-detect order confirmation from agent response
+            const orderMatch = response.match(/Order[-\s]?#?\s*(\w+-?\d+)/i)
+              || response.match(/(Order-\d{4})/i);
+            if (orderMatch && /confirm|placed|submitted|completed|success/i.test(response)) {
+              onOrderPlaced?.({
+                orderNumber: orderMatch[1],
+                timestamp: new Date(),
+              });
+            }
+
             return response;
           },
         });

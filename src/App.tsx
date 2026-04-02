@@ -6,17 +6,25 @@ import { Menu } from './components/Menu';
 import { Orders } from './components/Orders';
 import { Profile } from './components/Profile';
 import { VoiceAssistant } from './components/VoiceAssistant';
+import { OrderConfirmationModal } from './components/OrderConfirmationModal';
 
 type Tab = 'home' | 'menu' | 'orders' | 'profile';
 
+export interface OrderConfirmation {
+  orderNumber: string;
+  timestamp: Date;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
+  const [lastOrder, setLastOrder] = useState<OrderConfirmation | null>(null);
+  const [showOrderModal, setShowOrderModal] = useState(false);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'home': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
       case 'menu': return <Menu />;
-      case 'orders': return <Orders />;
+      case 'orders': return <Orders lastOrder={lastOrder} />;
       case 'profile': return <Profile />;
     }
   };
@@ -56,7 +64,16 @@ export default function App() {
       </main>
 
       {/* Voice Assistant — self-contained: mic button + inline popup bar */}
-      <VoiceAssistant />
+      <VoiceAssistant onOrderPlaced={(order) => { setLastOrder(order); setShowOrderModal(true); }} />
+
+      {/* Order Confirmation Modal */}
+      {showOrderModal && lastOrder && (
+        <OrderConfirmationModal
+          order={lastOrder}
+          onClose={() => setShowOrderModal(false)}
+          onViewOrders={() => { setShowOrderModal(false); setActiveTab('orders'); }}
+        />
+      )}
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-8 pt-4 bg-surface rounded-t-xl shadow-[0_-4px_24px_rgba(44,37,37,0.08)]">

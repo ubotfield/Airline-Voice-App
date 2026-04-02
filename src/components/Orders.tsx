@@ -1,13 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Mic, ReceiptText, AudioLines, Send, CheckCircle, AlertCircle, Loader2, Mail } from 'lucide-react';
+import { Mic, ReceiptText, AudioLines, Send, CheckCircle, AlertCircle, Loader2, Mail, Pencil } from 'lucide-react';
 import { apiUrl } from '../lib/api-base';
+import type { OrderConfirmation } from '../App';
 
-export const Orders: React.FC = () => {
+interface OrdersProps {
+  lastOrder?: OrderConfirmation | null;
+}
+
+export const Orders: React.FC<OrdersProps> = ({ lastOrder }) => {
   const [orderNumber, setOrderNumber] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
+  const [editing, setEditing] = useState(false);
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Auto-fill order number from last confirmed order
+  useEffect(() => {
+    if (lastOrder?.orderNumber) setOrderNumber(lastOrder.orderNumber);
+  }, [lastOrder]);
 
   // Load demo persona email as default
   useEffect(() => {
@@ -27,8 +38,12 @@ export const Orders: React.FC = () => {
   }, [toast]);
 
   async function handleSendReceipt() {
-    if (!orderNumber.trim() || !recipientEmail.trim()) {
-      setToast({ type: 'error', message: 'Enter both order number and email.' });
+    if (!orderNumber.trim()) {
+      setToast({ type: 'error', message: 'No order number yet. Place an order first!' });
+      return;
+    }
+    if (!recipientEmail.trim()) {
+      setToast({ type: 'error', message: 'Set up your email in Profile first.' });
       return;
     }
     setSending(true);
@@ -51,6 +66,9 @@ export const Orders: React.FC = () => {
     }
   }
 
+  const hasOrder = orderNumber.trim().length > 0;
+  const hasEmail = recipientEmail.trim().length > 0;
+
   return (
     <div className="space-y-10">
       <section className="space-y-2">
@@ -58,47 +76,64 @@ export const Orders: React.FC = () => {
         <p className="text-on-surface/70 font-medium">Track and manage your orders.</p>
       </section>
 
-      {/* Send Receipt card */}
+      {/* Simplified Send Receipt card */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-gradient-to-br from-primary/5 to-primary/10 rounded-2xl p-6 space-y-5 border border-primary/10"
+        className="bg-gradient-to-br from-primary/5 to-primary/10 rounded-2xl p-5 border border-primary/10"
       >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
             <Mail size={20} className="text-on-primary" />
           </div>
-          <div>
-            <h3 className="font-headline text-lg font-black text-on-surface">Send Receipt</h3>
-            <p className="text-on-surface/50 text-xs font-medium">Email a receipt for any order</p>
+
+          <div className="flex-1 min-w-0">
+            {hasOrder && !editing ? (
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="font-headline text-base font-black text-on-surface">{orderNumber}</p>
+                  <button
+                    onClick={() => setEditing(true)}
+                    className="text-on-surface/30 hover:text-primary transition-colors"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                </div>
+                {hasEmail && (
+                  <p className="text-on-surface/50 text-xs font-medium truncate">→ {recipientEmail}</p>
+                )}
+                {!hasEmail && (
+                  <p className="text-primary/70 text-xs font-medium">Set email in Profile tab</p>
+                )}
+              </div>
+            ) : editing ? (
+              <input
+                type="text"
+                value={orderNumber}
+                onChange={(e) => setOrderNumber(e.target.value)}
+                onBlur={() => setEditing(false)}
+                onKeyDown={(e) => e.key === 'Enter' && setEditing(false)}
+                autoFocus
+                placeholder="e.g. Order-0017"
+                className="w-full bg-white/80 rounded-lg px-3 py-2 text-on-surface text-sm font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
+              />
+            ) : (
+              <div>
+                <p className="font-headline text-sm font-bold text-on-surface/40">No order yet</p>
+                <p className="text-on-surface/30 text-xs font-medium">Place an order or <button onClick={() => setEditing(true)} className="text-primary underline">enter manually</button></p>
+              </div>
+            )}
           </div>
-        </div>
 
-        <div className="space-y-3">
-          <input
-            type="text"
-            value={orderNumber}
-            onChange={(e) => setOrderNumber(e.target.value)}
-            placeholder="Order number (e.g. Order-0017)"
-            className="w-full bg-white/80 rounded-xl px-4 py-3 text-on-surface text-sm font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
-          />
-          <input
-            type="email"
-            value={recipientEmail}
-            onChange={(e) => setRecipientEmail(e.target.value)}
-            placeholder="Email address"
-            className="w-full bg-white/80 rounded-xl px-4 py-3 text-on-surface text-sm font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
-          />
+          <button
+            onClick={handleSendReceipt}
+            disabled={sending || !hasOrder || !hasEmail}
+            className="flex items-center justify-center gap-2 bg-primary text-on-primary rounded-xl px-5 py-3 font-headline font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-30 flex-shrink-0"
+          >
+            {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            Send Receipt
+          </button>
         </div>
-
-        <button
-          onClick={handleSendReceipt}
-          disabled={sending || !orderNumber.trim() || !recipientEmail.trim()}
-          className="w-full flex items-center justify-center gap-2 bg-primary text-on-primary rounded-xl py-3.5 font-headline font-bold hover:opacity-90 transition-opacity disabled:opacity-40"
-        >
-          {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-          Send Receipt
-        </button>
       </motion.div>
 
       {/* Voice ordering prompt */}
