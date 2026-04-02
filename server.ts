@@ -43,9 +43,38 @@ const AGENT_API_BASE = "https://api.salesforce.com";
 const LLM_GATEWAY_TTS_URL =
   process.env.LLM_GATEWAY_TTS_URL || "wss://bot-svc-llm.sfproxy.einstein.aws-dev4-uswest2.aws.sfdc.cl/ws/v1/realtime/tts/gemini";
 const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || process.env.LLM_GW_API_KEY || "";
-const LLM_GATEWAY_TENANT_ID = process.env.LLM_GATEWAY_TENANT_ID || "";
 const TTS_VOICE = process.env.TTS_VOICE || "Kore";
 const TTS_MODEL = process.env.TTS_MODEL || "gemini-2.5-flash-tts";
+
+// Tenant ID: format is core/<instance>/<orgId>
+// e.g. core/storm-97d6c78c328e07/00DWt00000HCrmjMAD
+const LLM_GATEWAY_TENANT_ID = process.env.LLM_GATEWAY_TENANT_ID || "";
+let resolvedTenantId = LLM_GATEWAY_TENANT_ID;
+
+// Auto-resolve tenant ID once we have an org ID from the OAuth token
+async function getResolvedTenantId(): Promise<string> {
+  if (resolvedTenantId) return resolvedTenantId;
+  try {
+    const { accessToken, instanceUrl } = await getAccessToken();
+    // Get Org ID from Salesforce
+    const orgRes = await fetch(`${instanceUrl}/services/data/v62.0/query/?q=${encodeURIComponent("SELECT Id FROM Organization LIMIT 1")}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (orgRes.ok) {
+      const data = await orgRes.json();
+      const orgId = data.records?.[0]?.Id;
+      if (orgId) {
+        const url = new URL(instanceUrl);
+        const instance = url.hostname.split(".")[0];
+        resolvedTenantId = `core/${instance}/${orgId}`;
+        console.log(`[tts] Auto-resolved tenant ID: ${resolvedTenantId}`);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[tts] Could not auto-resolve tenant ID: ${err?.message}`);
+  }
+  return resolvedTenantId;
+}
 
 // ─── Token cache ─────────────────────────────────────────────────
 let cachedToken: string | null = null;
@@ -320,17 +349,21 @@ app.post("/api/tts", async (req, res) => {
   try {
     const audioChunks: Buffer[] = [];
 
+    // Resolve tenant ID (auto-derives from org if not set)
+    const tenantId = await getResolvedTenantId();
+
     await new Promise<void>((resolve, reject) => {
       const wsHeaders: Record<string, string> = {
         Authorization: `API_KEY ${LLM_GATEWAY_API_KEY}`,
         "x-client-feature-id": "Service replies",
         "x-app-type": "DeveloperGPT",
       };
-      if (LLM_GATEWAY_TENANT_ID) {
-        wsHeaders["x-sfdc-core-tenant-id"] = LLM_GATEWAY_TENANT_ID;
+      if (tenantId) {
+        wsHeaders["x-sfdc-core-tenant-id"] = tenantId;
       }
 
-      console.log(`[tts] Connecting to ${LLM_GATEWAY_TTS_URL} ...`);
+      console.log(`[tts] Connecting to ${LLM_GATEWAY_TTS_URL}`);
+      console.log(`[tts] Headers: tenant=${tenantId || "NONE"}, apiKey=${LLM_GATEWAY_API_KEY ? LLM_GATEWAY_API_KEY.substring(0, 8) + "..." : "NONE"}`);
       const ws = new WebSocket(LLM_GATEWAY_TTS_URL, { headers: wsHeaders });
 
       const timeout = setTimeout(() => {
@@ -514,6 +547,8 @@ app.get("/api/health", async (_req, res) => {
       voice: TTS_VOICE,
       model: TTS_MODEL,
       gatewayConfigured: !!LLM_GATEWAY_API_KEY,
+      tenantId: resolvedTenantId || "(will auto-resolve on first TTS call)",
+      gatewayUrl: LLM_GATEWAY_TTS_URL,
     },
     stt: {
       primary: "web-speech-api",
