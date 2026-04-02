@@ -432,6 +432,32 @@ function synthesizeViaTTSGateway(text: string, voice: string, wsUrl: string): Pr
   });
 }
 
+// ─── Circuit breaker: skip gateway for 5 min after failure ─────
+let gatewayCircuitOpen = false;
+let gatewayCircuitOpenUntil = 0;
+const CIRCUIT_BREAKER_MS = 5 * 60 * 1000; // 5 minutes
+
+function isGatewayCircuitOpen(): boolean {
+  if (!gatewayCircuitOpen) return false;
+  if (Date.now() > gatewayCircuitOpenUntil) {
+    gatewayCircuitOpen = false;
+    console.log("[tts] Circuit breaker reset — will try gateway again");
+    return false;
+  }
+  return true;
+}
+
+function openGatewayCircuit(): void {
+  gatewayCircuitOpen = true;
+  gatewayCircuitOpenUntil = Date.now() + CIRCUIT_BREAKER_MS;
+  console.log("[tts] Circuit breaker OPEN — skipping gateway for 5 minutes");
+}
+
+function closeGatewayCircuit(): void {
+  gatewayCircuitOpen = false;
+  gatewayCircuitOpenUntil = 0;
+}
+
 /**
  * Direct Gemini TTS via public REST API (fallback when LLM Gateway is unreachable).
  * Returns a Buffer containing a complete WAV file.
@@ -482,8 +508,8 @@ app.post("/api/tts", async (req, res) => {
 
   const selectedVoice = voice || LLM_GW_VOICE;
 
-  // Strategy 1: Try LLM Gateway (internal WebSocket) if configured
-  if (LLM_GW_API_KEY && LLM_GW_TENANT_ID) {
+  // Strategy 1: Try LLM Gateway (internal WebSocket) if configured and circuit is closed
+  if (LLM_GW_API_KEY && LLM_GW_TENANT_ID && !isGatewayCircuitOpen()) {
     const endpoints = [LLM_GW_TTS_URL, LLM_GW_TTS_URL_FALLBACK];
 
     for (let i = 0; i < endpoints.length; i++) {
@@ -498,6 +524,7 @@ app.post("/api/tts", async (req, res) => {
         const elapsed = Date.now() - ttsStart;
         console.log(`[tts] Got WAV audio: ${wavBuffer.length} bytes (${elapsed}ms, ${label})`);
 
+        closeGatewayCircuit(); // success — ensure circuit is closed
         res.set("Content-Type", "audio/wav");
         res.set("Content-Length", String(wavBuffer.length));
         return res.send(wavBuffer);
@@ -507,11 +534,14 @@ app.post("/api/tts", async (req, res) => {
           console.log("[tts] Trying fallback endpoint...");
           continue;
         }
+        openGatewayCircuit(); // all gateway endpoints failed — open circuit
         console.log("[tts] All gateway endpoints failed — trying direct Gemini API...");
       }
     }
-  } else {
+  } else if (!LLM_GW_API_KEY || !LLM_GW_TENANT_ID) {
     console.log("[tts] No LLM Gateway credentials — trying direct Gemini API...");
+  } else {
+    console.log("[tts] Gateway circuit breaker open — going straight to Gemini API");
   }
 
   // Strategy 2: Direct Gemini TTS API (public REST endpoint)
