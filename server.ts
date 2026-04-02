@@ -335,15 +335,35 @@ async function findDemoPersonaId(): Promise<{ id: string | null; debug: string[]
     debug.push(`Describe: ${res.status}`);
   } catch (e: any) { debug.push(`Describe error: ${e.message}`); }
 
-  // Strategy 3: Check API versions
+  // Strategy 3: SOQL on standard object (Account) to see if SOQL works at all
   try {
-    const url = `${instanceUrl}/services/data/`;
-    const res = await fetch(url, {
+    const q2 = encodeURIComponent("SELECT Id FROM Account LIMIT 1");
+    const url2 = `${instanceUrl}/services/data/v62.0/query/?q=${q2}`;
+    const res2 = await fetch(url2, {
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
     });
-    const text = await res.text();
-    debug.push(`Versions: ${res.status} ${text.substring(0, 200)}`);
-  } catch (e: any) { debug.push(`Versions error: ${e.message}`); }
+    const text2 = await res2.text();
+    debug.push(`SOQL(Account): ${res2.status} ${text2.substring(0, 300)}`);
+  } catch (e: any) { debug.push(`SOQL(Account) error: ${e.message}`); }
+
+  // Strategy 4: Try /services/data/v62.0/sobjects/ to list objects
+  try {
+    const url3 = `${instanceUrl}/services/data/v62.0/sobjects/`;
+    const res3 = await fetch(url3, {
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    });
+    debug.push(`sObjects: ${res3.status}`);
+  } catch (e: any) { debug.push(`sObjects error: ${e.message}`); }
+
+  // Strategy 5: Try Org Identity endpoint
+  try {
+    const url4 = `${instanceUrl}/services/oauth2/userinfo`;
+    const res4 = await fetch(url4, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const text4 = await res4.text();
+    debug.push(`UserInfo: ${res4.status} ${text4.substring(0, 300)}`);
+  } catch (e: any) { debug.push(`UserInfo error: ${e.message}`); }
 
   return { id: null, debug };
 }
