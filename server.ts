@@ -300,100 +300,43 @@ app.post("/api/stt", async (req, res) => {
 // all OAuth user contexts. We use the sObject REST endpoint to
 // GET/PATCH the record directly by ID instead.
 
-// Helper: find the Demo_Persona__c record ID
-async function findDemoPersonaId(): Promise<{ id: string | null; debug: string[] }> {
-  const debug: string[] = [];
-
-  // Log the token details
-  const { accessToken, instanceUrl } = await getAccessToken();
-  debug.push(`Token instanceUrl: ${instanceUrl}`);
-  debug.push(`Token prefix: ${accessToken.substring(0, 20)}...`);
-
-  // Strategy 1: SOQL query with explicit fresh fetch (no sfFetch wrapper)
+// Helper: Get the Demo_Persona__c org-level custom setting record directly
+// Uses the Hierarchy Custom Setting sObject REST endpoint — no SOQL needed.
+// The SOQL query endpoint returns 401 "session not valid for API" with this
+// Connected App's Client Credentials token (an External Client App migration
+// issue), but sObject REST endpoints work fine.
+async function getDemoPersona(): Promise<{ data: any | null; error?: string }> {
   try {
-    const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
-    const url = `${instanceUrl}/services/data/v62.0/query/?q=${q}`;
-    debug.push(`Fetching: ${url}`);
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    });
-    const text = await res.text();
-    debug.push(`SOQL: ${res.status} ${text.substring(0, 300)}`);
-    if (res.ok) {
-      const data = JSON.parse(text);
-      if (data.records?.length) return { id: data.records[0].Id, debug };
-      debug.push(`SOQL returned 0 records (totalSize=${data.totalSize})`);
+    // Hierarchy Custom Settings have a special OrgDefault endpoint
+    const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/OrgDefault`);
+    if (sfRes.ok) {
+      return { data: await sfRes.json() };
     }
-  } catch (e: any) { debug.push(`SOQL error: ${e.message}`); }
-
-  // Strategy 2: Describe (to see if REST API works at all)
-  try {
-    const url = `${instanceUrl}/services/data/v62.0/sobjects/Demo_Persona__c/describe/`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    });
-    debug.push(`Describe: ${res.status}`);
-  } catch (e: any) { debug.push(`Describe error: ${e.message}`); }
-
-  // Strategy 3: SOQL on standard object (Account) to see if SOQL works at all
-  try {
-    const q2 = encodeURIComponent("SELECT Id FROM Account LIMIT 1");
-    const url2 = `${instanceUrl}/services/data/v62.0/query/?q=${q2}`;
-    const res2 = await fetch(url2, {
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    });
-    const text2 = await res2.text();
-    debug.push(`SOQL(Account): ${res2.status} ${text2.substring(0, 300)}`);
-  } catch (e: any) { debug.push(`SOQL(Account) error: ${e.message}`); }
-
-  // Strategy 4: Try /services/data/v62.0/sobjects/ to list objects
-  try {
-    const url3 = `${instanceUrl}/services/data/v62.0/sobjects/`;
-    const res3 = await fetch(url3, {
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    });
-    debug.push(`sObjects: ${res3.status}`);
-  } catch (e: any) { debug.push(`sObjects error: ${e.message}`); }
-
-  // Strategy 5: Try Org Identity endpoint
-  try {
-    const url4 = `${instanceUrl}/services/oauth2/userinfo`;
-    const res4 = await fetch(url4, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const text4 = await res4.text();
-    debug.push(`UserInfo: ${res4.status} ${text4.substring(0, 300)}`);
-  } catch (e: any) { debug.push(`UserInfo error: ${e.message}`); }
-
-  return { id: null, debug };
+    const text = await sfRes.text();
+    // 404 means no org-level record exists yet
+    if (sfRes.status === 404) return { data: null };
+    return { data: null, error: `${sfRes.status}: ${text.substring(0, 200)}` };
+  } catch (e: any) {
+    return { data: null, error: e.message };
+  }
 }
 
 app.get("/api/demo-persona", async (_req, res) => {
   try {
-    const { id: recordId, debug } = await findDemoPersonaId();
-    console.log("[demo-persona] Debug:", debug);
+    const { data, error } = await getDemoPersona();
 
-    if (recordId) {
-      const sfRes = await sfFetch(
-        `/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}?fields=Id,Customer_Name__c,Customer_Phone__c,Customer_Email__c`
-      );
-      if (sfRes.ok) {
-        const r = await sfRes.json();
-        return res.json({
-          id: r.Id,
-          customerName: r.Customer_Name__c || "",
-          customerPhone: r.Customer_Phone__c || "",
-          customerEmail: r.Customer_Email__c || "",
-          isConfigured: !!(r.Customer_Name__c && r.Customer_Phone__c),
-        });
-      }
-      const err = await sfRes.text();
-      console.error("[demo-persona] Direct GET failed:", sfRes.status, err);
-    } else {
-      console.log("[demo-persona] No record found via any strategy");
+    if (data) {
+      return res.json({
+        id: data.Id,
+        customerName: data.Customer_Name__c || "",
+        customerPhone: data.Customer_Phone__c || "",
+        customerEmail: data.Customer_Email__c || "",
+        isConfigured: !!(data.Customer_Name__c && data.Customer_Phone__c),
+      });
     }
 
-    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false, debug });
+    if (error) console.error("[demo-persona] GET error:", error);
+    return res.json({ id: null, customerName: "", customerPhone: "", customerEmail: "", isConfigured: false });
   } catch (err: any) {
     console.error("[demo-persona] Error:", err.message);
     return res.status(500).json({ error: err.message });
@@ -403,12 +346,11 @@ app.get("/api/demo-persona", async (_req, res) => {
 app.put("/api/demo-persona", async (req, res) => {
   const { customerName, customerPhone, customerEmail } = req.body;
   try {
-    const { id: recordId, debug } = await findDemoPersonaId();
-    console.log("[demo-persona PUT] Debug:", debug);
+    const { data: existing } = await getDemoPersona();
 
-    if (recordId) {
+    if (existing?.Id) {
       // Update existing record by direct PATCH
-      const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/${recordId}`, {
+      const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/${existing.Id}`, {
         method: "PATCH",
         body: JSON.stringify({
           Customer_Name__c: customerName || null,
@@ -421,19 +363,21 @@ app.put("/api/demo-persona", async (req, res) => {
         console.error("[demo-persona] Update failed:", sfRes.status, err);
         return res.status(sfRes.status).json({ error: "Failed to update demo persona", details: err.substring(0, 200) });
       }
-      console.log("[demo-persona] Updated record:", recordId);
-      return res.json({ success: true, action: "updated", id: recordId });
+      console.log("[demo-persona] Updated record:", existing.Id);
+      return res.json({ success: true, action: "updated", id: existing.Id });
     } else {
-      // Create new org-level record
-      const orgQuery = encodeURIComponent("SELECT Id FROM Organization LIMIT 1");
-      const orgRes = await sfFetch(`/services/data/v62.0/query/?q=${orgQuery}`);
+      // Create new org-level record — get org ID from userinfo (no SOQL needed)
+      const { accessToken, instanceUrl } = await getAccessToken();
+      const userInfoRes = await fetch(`${instanceUrl}/services/oauth2/userinfo`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
       let orgId = "";
-      if (orgRes.ok) {
-        const orgData = await orgRes.json();
-        if (orgData.records?.length) orgId = orgData.records[0].Id;
+      if (userInfoRes.ok) {
+        const info = await userInfoRes.json();
+        orgId = info.organization_id || "";
       }
       if (!orgId) {
-        return res.status(500).json({ error: "Could not determine org ID" });
+        return res.status(500).json({ error: "Could not determine org ID from userinfo" });
       }
 
       const sfRes = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c`, {
