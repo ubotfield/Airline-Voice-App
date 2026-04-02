@@ -300,47 +300,50 @@ app.post("/api/stt", async (req, res) => {
 // all OAuth user contexts. We use the sObject REST endpoint to
 // GET/PATCH the record directly by ID instead.
 
-// Helper: find the Demo_Persona__c record ID using multiple strategies
+// Helper: find the Demo_Persona__c record ID
 async function findDemoPersonaId(): Promise<{ id: string | null; debug: string[] }> {
   const debug: string[] = [];
 
-  // Strategy 1: Simple SOQL query
+  // Log the token details
+  const { accessToken, instanceUrl } = await getAccessToken();
+  debug.push(`Token instanceUrl: ${instanceUrl}`);
+  debug.push(`Token prefix: ${accessToken.substring(0, 20)}...`);
+
+  // Strategy 1: SOQL query with explicit fresh fetch (no sfFetch wrapper)
   try {
     const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
-    const res = await sfFetch(`/services/data/v62.0/query/?q=${q}`);
+    const url = `${instanceUrl}/services/data/v62.0/query/?q=${q}`;
+    debug.push(`Fetching: ${url}`);
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    });
     const text = await res.text();
-    debug.push(`S1(SOQL): ${res.status} ${text.substring(0, 300)}`);
+    debug.push(`SOQL: ${res.status} ${text.substring(0, 300)}`);
     if (res.ok) {
       const data = JSON.parse(text);
       if (data.records?.length) return { id: data.records[0].Id, debug };
+      debug.push(`SOQL returned 0 records (totalSize=${data.totalSize})`);
     }
-  } catch (e: any) { debug.push(`S1(SOQL) error: ${e.message}`); }
+  } catch (e: any) { debug.push(`SOQL error: ${e.message}`); }
 
-  // Strategy 2: queryAll
+  // Strategy 2: Describe (to see if REST API works at all)
   try {
-    const q = encodeURIComponent("SELECT Id FROM Demo_Persona__c LIMIT 1");
-    const res = await sfFetch(`/services/data/v62.0/queryAll/?q=${q}`);
-    const text = await res.text();
-    debug.push(`S2(queryAll): ${res.status} ${text.substring(0, 300)}`);
-    if (res.ok) {
-      const data = JSON.parse(text);
-      if (data.records?.length) return { id: data.records[0].Id, debug };
-    }
-  } catch (e: any) { debug.push(`S2(queryAll) error: ${e.message}`); }
+    const url = `${instanceUrl}/services/data/v62.0/sobjects/Demo_Persona__c/describe/`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    });
+    debug.push(`Describe: ${res.status}`);
+  } catch (e: any) { debug.push(`Describe error: ${e.message}`); }
 
-  // Strategy 3: Try a simple API version check to see if REST API works at all
+  // Strategy 3: Check API versions
   try {
-    const res = await sfFetch(`/services/data/v62.0/limits/`);
+    const url = `${instanceUrl}/services/data/`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    });
     const text = await res.text();
-    debug.push(`S3(limits): ${res.status} ${text.substring(0, 300)}`);
-  } catch (e: any) { debug.push(`S3(limits) error: ${e.message}`); }
-
-  // Strategy 4: Describe the object to verify it exists
-  try {
-    const res = await sfFetch(`/services/data/v62.0/sobjects/Demo_Persona__c/describe/`);
-    const text = await res.text();
-    debug.push(`S4(describe): ${res.status} ${text.substring(0, 300)}`);
-  } catch (e: any) { debug.push(`S4(describe) error: ${e.message}`); }
+    debug.push(`Versions: ${res.status} ${text.substring(0, 200)}`);
+  } catch (e: any) { debug.push(`Versions error: ${e.message}`); }
 
   return { id: null, debug };
 }
