@@ -494,8 +494,12 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
   }
 
   const data = await res.json();
-  const audioB64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+  const part = data.candidates?.[0]?.content?.parts?.[0];
+  const audioB64 = part?.inlineData?.data;
+  const mimeType = part?.inlineData?.mimeType || "unknown";
   if (!audioB64) throw new Error("No audio data in Gemini TTS response");
+
+  console.log(`[tts] Gemini response mimeType: ${mimeType}, b64 length: ${audioB64.length}`);
 
   // Decode base64 PCM and wrap in WAV header
   const pcmData = Buffer.from(audioB64, "base64");
@@ -646,8 +650,28 @@ app.post("/api/send-receipt", async (req, res) => {
 
 app.get("/api/tts-test", async (_req, res) => {
   try {
-    const wavBuffer = await synthesizeViaGeminiAPI("Welcome to Scott's Fresh Kitchens. How can I help you today?", "Kore");
-    res.json({ ok: true, bytes: wavBuffer.length });
+    // Quick inline test to see full Gemini response details
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+    const model = "gemini-2.5-flash-preview-tts";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    const apiRes = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: "Say in a friendly conversational tone: Welcome to Scott's Fresh Kitchens." }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
+        },
+      }),
+    });
+    const data = await apiRes.json();
+    if (!apiRes.ok) return res.json({ ok: false, error: JSON.stringify(data).substring(0, 500) });
+    const part = data.candidates?.[0]?.content?.parts?.[0];
+    const mimeType = part?.inlineData?.mimeType || "none";
+    const b64len = part?.inlineData?.data?.length || 0;
+    const pcmBytes = b64len ? Buffer.from(part.inlineData.data, "base64").length : 0;
+    res.json({ ok: true, mimeType, b64Length: b64len, pcmBytes, wavBytes: pcmBytes + 44 });
   } catch (err: any) {
     res.json({ ok: false, error: err.message });
   }
