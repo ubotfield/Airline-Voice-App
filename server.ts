@@ -508,6 +508,8 @@ app.post("/api/tts", async (req, res) => {
 
   const selectedVoice = voice || LLM_GW_VOICE;
 
+  let lastError = "";
+
   // Strategy 1: Gemini API (primary — fast ~2s, reliable, free)
   if (process.env.GEMINI_API_KEY) {
     try {
@@ -522,10 +524,12 @@ app.post("/api/tts", async (req, res) => {
       res.set("Content-Length", String(wavBuffer.length));
       return res.send(wavBuffer);
     } catch (geminiErr: any) {
+      lastError = `Gemini: ${geminiErr.message}`;
       console.error("[tts] Gemini API (primary) failed:", geminiErr.message);
       console.log("[tts] Falling back to LLM Gateway...");
     }
   } else {
+    lastError = "No GEMINI_API_KEY";
     console.log("[tts] No GEMINI_API_KEY — trying LLM Gateway directly...");
   }
 
@@ -564,7 +568,7 @@ app.post("/api/tts", async (req, res) => {
     console.log("[tts] Gateway circuit breaker open — skipping gateway fallback");
   }
 
-  return res.status(502).json({ error: "TTS failed on all providers (Gemini API + gateway)" });
+  return res.status(502).json({ error: "TTS failed on all providers (Gemini API + gateway)", detail: lastError });
 });
 
 // ─── Demo Persona Routes ────────────────────────────────────────
@@ -632,6 +636,17 @@ app.post("/api/send-receipt", async (req, res) => {
   } catch (err: any) {
     console.error("[send-receipt] Error:", err.message);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── TTS Diagnostic (temporary) ─────────────────────────────────
+
+app.get("/api/tts-test", async (_req, res) => {
+  try {
+    const wavBuffer = await synthesizeViaGeminiAPI("Hello", "Kore");
+    res.json({ ok: true, bytes: wavBuffer.length });
+  } catch (err: any) {
+    res.json({ ok: false, error: err.message });
   }
 });
 
