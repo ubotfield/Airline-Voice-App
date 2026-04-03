@@ -821,14 +821,24 @@ export class NativeVoiceService {
   }
 
   private async playAudioBuffer(data: ArrayBuffer): Promise<void> {
+    dbg(`playAudioBuffer: input ${data.byteLength} bytes`);
+
     if (!this.playbackContext || this.playbackContext.state === "closed") {
-      this.playbackContext = new AudioContext();
-    }
-    if (this.playbackContext.state === "suspended") {
-      await this.playbackContext.resume();
+      dbg("playAudioBuffer: creating fresh AudioContext");
+      this.playbackContext = new AudioContext({ sampleRate: 24000 });
     }
 
+    dbg(`playAudioBuffer: context state=${this.playbackContext.state} sampleRate=${this.playbackContext.sampleRate}`);
+
+    if (this.playbackContext.state === "suspended") {
+      dbg("playAudioBuffer: resuming suspended context");
+      await this.playbackContext.resume();
+      dbg(`playAudioBuffer: after resume state=${this.playbackContext.state}`);
+    }
+
+    dbg("playAudioBuffer: decoding audio data...");
     const audioBuffer = await this.playbackContext.decodeAudioData(data.slice(0));
+    dbg(`playAudioBuffer: decoded OK — duration=${audioBuffer.duration.toFixed(2)}s channels=${audioBuffer.numberOfChannels} sampleRate=${audioBuffer.sampleRate}`);
 
     // Add a DynamicsCompressor to normalize volume
     const compressor = this.playbackContext.createDynamicsCompressor();
@@ -864,8 +874,13 @@ export class NativeVoiceService {
         source.connect(compressor);
         compressor.connect(gainNode);
         gainNode.connect(this.playbackContext!.destination);
-        source.onended = () => finish();
+        source.onended = () => {
+          dbg("playAudioBuffer: source.onended fired");
+          finish();
+        };
+        dbg("playAudioBuffer: starting playback...");
         source.start();
+        dbg(`playAudioBuffer: started — context state=${this.playbackContext!.state}`);
       } catch (err) {
         clearTimeout(safetyTimeout);
         reject(err);
