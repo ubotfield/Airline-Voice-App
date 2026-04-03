@@ -674,23 +674,25 @@ export class NativeVoiceService {
           dbg(`TTS response: ${audioData.byteLength} bytes, ${contentType}`);
 
           if (audioData.byteLength > 0) {
-            // Try 1: AudioContext (stays unlocked after initial tap — most reliable)
+            // Try 1: <audio> element FIRST — most reliable cross-platform
+            // AudioContext has gesture-unlock issues that cause silent playback
+            try {
+              dbg("Trying <audio> element playback (primary)...");
+              await this.playAudioViaElement(audioData, contentType);
+              dbg("<audio> element playback succeeded ✓");
+              return;
+            } catch (e: any) {
+              dbg(`<audio> element failed: ${e?.message}, trying AudioContext...`);
+            }
+
+            // Try 2: AudioContext fallback
             await this.ensurePlaybackContext();
             try {
               await this.playAudioBuffer(audioData);
-              dbg("AudioContext playback succeeded");
+              dbg("AudioContext playback succeeded ✓");
               return;
             } catch (e: any) {
-              dbg(`AudioContext failed, trying <audio> element: ${e?.message}`);
-            }
-
-            // Try 2: <audio> element fallback
-            try {
-              await this.playAudioViaElement(audioData, contentType);
-              dbg("<audio> element playback succeeded");
-              return;
-            } catch (e: any) {
-              dbg(`<audio> element also failed: ${e?.message}`);
+              dbg(`AudioContext also failed: ${e?.message}`);
             }
 
             // Both playback methods failed — skip speaking (no robotic fallback)
@@ -791,32 +793,54 @@ export class NativeVoiceService {
   private playAudioViaElement(data: ArrayBuffer, mimeType: string): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        const blob = new Blob([data], { type: mimeType });
+        // Use audio/wav for proper browser decoding
+        const blobType = mimeType.includes("wav") ? "audio/wav" : mimeType;
+        const blob = new Blob([data], { type: blobType });
         const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
+        const audio = new Audio();
+        audio.volume = 1.0;
+        audio.preload = "auto";
 
         let settled = false;
         const finish = (success: boolean, reason?: any) => {
           if (settled) return;
           settled = true;
           clearTimeout(safetyTimeout);
+          try { audio.pause(); audio.src = ""; } catch { /* ignore */ }
           URL.revokeObjectURL(url);
           if (success) resolve(); else reject(reason);
         };
 
-        // Safety timeout: 15s max
+        // Safety timeout based on audio size (rough: 48kB/s for 24kHz 16-bit mono)
+        const estimatedDurationMs = Math.max(15000, (data.byteLength / 48000) * 1000 + 5000);
         const safetyTimeout = setTimeout(() => {
-          dbg("<audio> playback timed out after 15s");
-          try { audio.pause(); } catch { /* ignore */ }
+          dbg(`<audio> playback timed out after ${(estimatedDurationMs / 1000).toFixed(0)}s`);
           finish(true);
-        }, 15000);
+        }, estimatedDurationMs);
 
-        audio.onended = () => finish(true);
-        audio.onerror = (e) => finish(false, e);
+        audio.onended = () => {
+          dbg("<audio> onended fired");
+          finish(true);
+        };
+        audio.onerror = (e) => {
+          dbg(`<audio> onerror: ${audio.error?.code} ${audio.error?.message}`);
+          finish(false, e);
+        };
+        audio.oncanplaythrough = () => {
+          dbg(`<audio> canplaythrough — duration=${audio.duration.toFixed(2)}s`);
+        };
+
+        audio.src = url;
+        audio.load();
 
         const playPromise = audio.play();
         if (playPromise) {
-          playPromise.catch((err) => finish(false, err));
+          playPromise.then(() => {
+            dbg(`<audio> play() resolved — playing audio`);
+          }).catch((err) => {
+            dbg(`<audio> play() rejected: ${err?.message}`);
+            finish(false, err);
+          });
         }
       } catch (err) {
         reject(err);
