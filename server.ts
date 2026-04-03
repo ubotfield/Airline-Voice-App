@@ -508,7 +508,28 @@ app.post("/api/tts", async (req, res) => {
 
   const selectedVoice = voice || LLM_GW_VOICE;
 
-  // Strategy 1: Try LLM Gateway (internal WebSocket) if configured and circuit is closed
+  // Strategy 1: Gemini API (primary — fast ~2s, reliable, free)
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const ttsStart = Date.now();
+      console.log(`[tts] Gemini API TTS (primary): "${text.substring(0, 60)}..." (voice: ${selectedVoice})`);
+
+      const wavBuffer = await synthesizeViaGeminiAPI(text, selectedVoice);
+      const elapsed = Date.now() - ttsStart;
+      console.log(`[tts] Gemini API WAV audio: ${wavBuffer.length} bytes (${elapsed}ms)`);
+
+      res.set("Content-Type", "audio/wav");
+      res.set("Content-Length", String(wavBuffer.length));
+      return res.send(wavBuffer);
+    } catch (geminiErr: any) {
+      console.error("[tts] Gemini API (primary) failed:", geminiErr.message);
+      console.log("[tts] Falling back to LLM Gateway...");
+    }
+  } else {
+    console.log("[tts] No GEMINI_API_KEY — trying LLM Gateway directly...");
+  }
+
+  // Strategy 2: LLM Gateway (fallback — WebSocket, higher latency)
   if (LLM_GW_API_KEY && LLM_GW_TENANT_ID && !isGatewayCircuitOpen()) {
     const endpoints = [LLM_GW_TTS_URL, LLM_GW_TTS_URL_FALLBACK];
 
@@ -522,45 +543,28 @@ app.post("/api/tts", async (req, res) => {
 
         const wavBuffer = await synthesizeViaTTSGateway(text, selectedVoice, wsUrl);
         const elapsed = Date.now() - ttsStart;
-        console.log(`[tts] Got WAV audio: ${wavBuffer.length} bytes (${elapsed}ms, ${label})`);
+        console.log(`[tts] Got WAV audio: ${wavBuffer.length} bytes (${elapsed}ms, gateway ${label})`);
 
         closeGatewayCircuit(); // success — ensure circuit is closed
         res.set("Content-Type", "audio/wav");
         res.set("Content-Length", String(wavBuffer.length));
         return res.send(wavBuffer);
       } catch (err: any) {
-        console.error(`[tts] ${label} endpoint failed:`, err.message);
+        console.error(`[tts] Gateway ${label} endpoint failed:`, err.message);
         if (i < endpoints.length - 1) {
-          console.log("[tts] Trying fallback endpoint...");
+          console.log("[tts] Trying gateway fallback endpoint...");
           continue;
         }
         openGatewayCircuit(); // all gateway endpoints failed — open circuit
-        console.log("[tts] All gateway endpoints failed — trying direct Gemini API...");
       }
     }
   } else if (!LLM_GW_API_KEY || !LLM_GW_TENANT_ID) {
-    console.log("[tts] No LLM Gateway credentials — trying direct Gemini API...");
+    console.log("[tts] No LLM Gateway credentials — no fallback available");
   } else {
-    console.log("[tts] Gateway circuit breaker open — going straight to Gemini API");
+    console.log("[tts] Gateway circuit breaker open — skipping gateway fallback");
   }
 
-  // Strategy 2: Direct Gemini TTS API (public REST endpoint)
-  try {
-    const ttsStart = Date.now();
-    console.log(`[tts] Gemini API TTS: "${text.substring(0, 60)}..." (voice: ${selectedVoice})`);
-
-    const wavBuffer = await synthesizeViaGeminiAPI(text, selectedVoice);
-    const elapsed = Date.now() - ttsStart;
-    console.log(`[tts] Gemini API WAV audio: ${wavBuffer.length} bytes (${elapsed}ms)`);
-
-    res.set("Content-Type", "audio/wav");
-    res.set("Content-Length", String(wavBuffer.length));
-    return res.send(wavBuffer);
-  } catch (geminiErr: any) {
-    console.error("[tts] Gemini API fallback failed:", geminiErr.message);
-  }
-
-  return res.status(502).json({ error: "TTS failed on all providers (gateway + Gemini API)" });
+  return res.status(502).json({ error: "TTS failed on all providers (Gemini API + gateway)" });
 });
 
 // ─── Demo Persona Routes ────────────────────────────────────────
@@ -642,7 +646,7 @@ app.get("/api/health", async (_req, res) => {
     loginUrl: SF_LOGIN_URL || "not set",
     agentId: SF_AGENT_ID ? `${SF_AGENT_ID.substring(0, 8)}...` : "not set",
     tts: {
-      provider: LLM_GW_API_KEY ? "llm-gateway" : (process.env.GEMINI_API_KEY ? "gemini-api" : "none"),
+      provider: process.env.GEMINI_API_KEY ? "gemini-api" : (LLM_GW_API_KEY ? "llm-gateway" : "none"),
       gatewayKeySet: !!LLM_GW_API_KEY,
       gatewayTenantIdSet: !!LLM_GW_TENANT_ID,
       geminiKeySet: !!process.env.GEMINI_API_KEY,
@@ -699,8 +703,8 @@ app.listen(PORT, () => {
   console.log(`   Agent ID: ${SF_AGENT_ID || "NOT SET"}`);
   console.log(`   Instance: ${SF_LOGIN_URL}`);
   console.log(`   Auth: ${SF_CLIENT_ID && SF_CLIENT_SECRET ? "Configured ✓" : "⚠️  Missing credentials"}`);
-  console.log(`   TTS Gateway: ${LLM_GW_API_KEY ? `LLM Gateway (${LLM_GW_VOICE} voice) ✓` : "⚠️  No LLM_GW_API_KEY"}`);
-  console.log(`   TTS Fallback: ${process.env.GEMINI_API_KEY ? `Gemini API (${LLM_GW_VOICE} voice) ✓` : "⚠️  No GEMINI_API_KEY — no fallback TTS"}`);
-  console.log(`   TTS Tenant: ${LLM_GW_TENANT_ID ? `${LLM_GW_TENANT_ID} ✓` : "⚠️  No LLM_GW_TENANT_ID"}`);
+  console.log(`   TTS Primary: ${process.env.GEMINI_API_KEY ? `Gemini API (${LLM_GW_VOICE} voice) ✓` : "⚠️  No GEMINI_API_KEY"}`);
+  console.log(`   TTS Fallback: ${LLM_GW_API_KEY ? `LLM Gateway (${LLM_GW_VOICE} voice) ✓` : "⚠️  No LLM_GW_API_KEY — no fallback TTS"}`);
+  console.log(`   TTS Tenant: ${LLM_GW_TENANT_ID ? `${LLM_GW_TENANT_ID} ✓` : "⚠️  No LLM_GW_TENANT_ID (gateway fallback disabled)"}`);
   console.log(`   STT: Web Speech API (primary) + Gemini (fallback) ${process.env.GEMINI_API_KEY ? "✓" : "⚠️  No GEMINI_API_KEY"}\n`);
 });
