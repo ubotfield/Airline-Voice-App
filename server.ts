@@ -469,11 +469,14 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
   const model = "gemini-2.5-flash-preview-tts";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 
+  // Prefix with "Say:" to ensure the TTS model generates audio, not text
+  const ttsPrompt = `Say in a friendly conversational tone: ${text}`;
+
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: [{ text: ttsPrompt }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: {
@@ -643,7 +646,7 @@ app.post("/api/send-receipt", async (req, res) => {
 
 app.get("/api/tts-test", async (_req, res) => {
   try {
-    const wavBuffer = await synthesizeViaGeminiAPI("Hello", "Kore");
+    const wavBuffer = await synthesizeViaGeminiAPI("Welcome to Scott's Fresh Kitchens. How can I help you today?", "Kore");
     res.json({ ok: true, bytes: wavBuffer.length });
   } catch (err: any) {
     res.json({ ok: false, error: err.message });
