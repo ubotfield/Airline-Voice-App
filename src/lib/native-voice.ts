@@ -225,9 +225,13 @@ export class NativeVoiceService {
 
       this.setupVolumeMonitor(this.mediaStream);
 
-      // Clean up pre-unlocked context (not needed for V2 — TTS is browser-native)
-      try { this.preUnlockedContext?.close(); } catch { /* ignore */ }
-      this.preUnlockedContext = null;
+      // KEEP the pre-unlocked AudioContext for TTS playback — it was created
+      // during the user tap gesture, so it has full audio output permission.
+      if (this.preUnlockedContext && this.preUnlockedContext.state !== "closed") {
+        dbg("Promoting pre-unlocked AudioContext to playbackContext");
+        this.playbackContext = this.preUnlockedContext;
+        this.preUnlockedContext = null;
+      }
 
       if (this.sttMode === "media-recorder") {
         this.supportedMimeType = this.getSupportedMimeType();
@@ -823,9 +827,11 @@ export class NativeVoiceService {
   private async playAudioBuffer(data: ArrayBuffer): Promise<void> {
     dbg(`playAudioBuffer: input ${data.byteLength} bytes`);
 
+    // Always use the existing playbackContext (gesture-unlocked).
+    // Only create new one as absolute last resort.
     if (!this.playbackContext || this.playbackContext.state === "closed") {
-      dbg("playAudioBuffer: creating fresh AudioContext");
-      this.playbackContext = new AudioContext({ sampleRate: 24000 });
+      dbg("playAudioBuffer: WARNING — no gesture-unlocked context, creating new one (may be silent)");
+      this.playbackContext = new AudioContext();
     }
 
     dbg(`playAudioBuffer: context state=${this.playbackContext.state} sampleRate=${this.playbackContext.sampleRate}`);
@@ -840,17 +846,10 @@ export class NativeVoiceService {
     const audioBuffer = await this.playbackContext.decodeAudioData(data.slice(0));
     dbg(`playAudioBuffer: decoded OK — duration=${audioBuffer.duration.toFixed(2)}s channels=${audioBuffer.numberOfChannels} sampleRate=${audioBuffer.sampleRate}`);
 
-    // Add a DynamicsCompressor to normalize volume
-    const compressor = this.playbackContext.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-20, this.playbackContext.currentTime);
-    compressor.knee.setValueAtTime(10, this.playbackContext.currentTime);
-    compressor.ratio.setValueAtTime(8, this.playbackContext.currentTime);
-    compressor.attack.setValueAtTime(0.003, this.playbackContext.currentTime);
-    compressor.release.setValueAtTime(0.15, this.playbackContext.currentTime);
-
-    // Add a GainNode for consistent output level
+    // Simplified audio chain: source → gain → speakers
+    // Removed DynamicsCompressor which could suppress low-level audio to near-silence
     const gainNode = this.playbackContext.createGain();
-    gainNode.gain.setValueAtTime(1.3, this.playbackContext.currentTime);
+    gainNode.gain.setValueAtTime(1.5, this.playbackContext.currentTime);
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -870,9 +869,8 @@ export class NativeVoiceService {
       try {
         const source = this.playbackContext!.createBufferSource();
         source.buffer = audioBuffer;
-        // Route: source → compressor → gain → speakers
-        source.connect(compressor);
-        compressor.connect(gainNode);
+        // Simplified: source → gain → speakers (no compressor)
+        source.connect(gainNode);
         gainNode.connect(this.playbackContext!.destination);
         source.onended = () => {
           dbg("playAudioBuffer: source.onended fired");
