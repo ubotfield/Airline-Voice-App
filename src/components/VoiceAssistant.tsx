@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Mic } from "lucide-react";
 import { NativeVoiceService } from "../lib/native-voice";
 import { AgentforceSession } from "../lib/agentforce-api";
+import { apiUrl } from "../lib/api-base";
 import { cn } from "../lib/utils";
 
 /**
@@ -64,7 +65,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       nativeRef.current = native;
 
       try {
-        // 1. Start Agentforce session
+        // 1. Start Agentforce session (persona is loaded automatically)
         const agent = new AgentforceSession();
         await agent.start();
         agentRef.current = agent;
@@ -78,13 +79,13 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             setHasError(false);
             hasErrorRef.current = false;
 
-            // Send greeting
+            // Send greeting (persona context is auto-prepended by AgentforceSession)
             try {
               if (agentRef.current?.isActive) {
                 setStatus("Getting greeting...");
-                const greeting = await agentRef.current.sendMessage("Hello");
+                const { response: greeting, audioData } = await agentRef.current.sendMessageWithAudio("Hello");
                 if (!agentRef.current?.isActive) return;
-                await nativeRef.current?.sendGreeting(greeting);
+                await nativeRef.current?.sendGreetingWithAudio(greeting, audioData);
                 setStatus("Listening...");
               }
             } catch (err) {
@@ -115,19 +116,60 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               return "I'm sorry, the connection was lost. Please try again.";
             }
             setStatus("Processing...");
-            const response = await agentRef.current.sendMessage(userText);
+
+            // Use combined agent+TTS endpoint to save a round-trip
+            const { response, audioData } = await agentRef.current.sendMessageWithAudio(userText);
 
             // Auto-detect order confirmation from agent response
-            const orderMatch = response.match(/Order[-\s]?#?\s*(\w+-?\d+)/i)
-              || response.match(/(Order-\d{4})/i);
-            if (orderMatch && /confirm|placed|submitted|completed|success/i.test(response)) {
+            const orderMatch = response.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
+              || response.match(/(Order-\d{3,5})/i)
+              || response.match(/#\s*([\w]+-\d+)/i);
+
+            const isConfirmation = /(?:placed|confirmed|submitted|completed)\s*(?:successfully)?|(?:order|it)\s+(?:is|has been)\s+(?:placed|confirmed|ready)|your order for/i.test(response);
+
+            if (isConfirmation || (orderMatch && /order\s*(?:number|#|is)/i.test(response))) {
+              let finalOrderNumber = orderMatch ? orderMatch[1] : null;
+
+              // If no order number in confirmation, try two fallbacks:
+              // 1. Ask the agent for it
+              if (!finalOrderNumber && agentRef.current?.isActive) {
+                try {
+                  const followUp = await agentRef.current.sendMessage("What is my order number?");
+                  const followUpMatch = followUp.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
+                    || followUp.match(/(Order-\d{3,5})/i)
+                    || followUp.match(/#\s*([\w]+-\d+)/i);
+                  if (followUpMatch) {
+                    finalOrderNumber = followUpMatch[1];
+                  }
+                } catch (err) {
+                  console.warn("[voice] Order number follow-up failed:", err);
+                }
+              }
+
+              // 2. If still no order number, fetch the latest order from Salesforce
+              if (!finalOrderNumber) {
+                try {
+                  const latestRes = await fetch(apiUrl("/api/latest-order"));
+                  if (latestRes.ok) {
+                    const latestData = await latestRes.json();
+                    if (latestData.orderNumber) {
+                      finalOrderNumber = latestData.orderNumber;
+                      console.log("[voice] Got latest order from SF:", finalOrderNumber);
+                    }
+                  }
+                } catch (err) {
+                  console.warn("[voice] Latest order lookup failed:", err);
+                }
+              }
+
               onOrderPlaced?.({
-                orderNumber: orderMatch[1],
+                orderNumber: finalOrderNumber || `Order-0000`,
                 timestamp: new Date(),
               });
             }
 
-            return response;
+            // Return response with pre-fetched audio to skip separate TTS call
+            return { text: response, audioData } as any;
           },
         });
       } catch (err: any) {

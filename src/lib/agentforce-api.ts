@@ -3,6 +3,9 @@ import { apiUrl } from "./api-base";
 export class AgentforceSession {
   private sessionId: string | null = null;
   private sequenceId: number = 0;
+  private personaInjected: boolean = false;
+  private personaContext: string = "";
+  private personaVarsCache: Array<{ name: string; type: string; value: string }> = [];
 
   get isActive(): boolean {
     return this.sessionId !== null;
@@ -17,15 +20,69 @@ export class AgentforceSession {
     const data = await res.json();
     this.sessionId = data.sessionId;
     this.sequenceId = 0;
+    this.personaInjected = false;
+    this.personaContext = "";
+    this.personaVarsCache = [];
+
+    // Pre-fetch persona so it's ready for every message
+    await this.loadPersona();
+  }
+
+  /**
+   * Loads persona data once and caches it for the session.
+   * The context string is prepended to EVERY message so the agent never re-asks.
+   */
+  private async loadPersona(): Promise<void> {
+    try {
+      const res = await fetch(apiUrl("/api/demo-persona"));
+      if (!res.ok) return;
+      const persona = await res.json();
+
+      const parts: string[] = [];
+      if (persona.customerName) {
+        parts.push(`my name is ${persona.customerName}`);
+        this.personaVarsCache.push({ name: "CustomerName", type: "Text", value: persona.customerName });
+      }
+      if (persona.customerPhone) {
+        parts.push(`my phone number is ${persona.customerPhone}`);
+        this.personaVarsCache.push({ name: "CustomerPhone", type: "Text", value: persona.customerPhone });
+      }
+      if (persona.customerEmail) {
+        parts.push(`my email is ${persona.customerEmail}`);
+        this.personaVarsCache.push({ name: "CustomerEmail", type: "Text", value: persona.customerEmail });
+      }
+      if (parts.length > 0) {
+        this.personaContext = `[Customer info — do not ask again: ${parts.join(", ")}] `;
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Returns Agentforce-compatible context variables (only on first call).
+   */
+  private getPersonaVariables(): Array<{ name: string; type: string; value: string }> {
+    if (this.personaInjected) return [];
+    this.personaInjected = true;
+    return this.personaVarsCache;
+  }
+
+  /**
+   * Prepends persona context to the message so the agent always knows
+   * the customer's name/phone/email without needing to ask.
+   */
+  private enrichMessage(text: string): string {
+    if (!this.personaContext) return text;
+    return this.personaContext + text;
   }
 
   async sendMessage(text: string): Promise<string> {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
+    const variables = this.getPersonaVariables();
     const res = await fetch(apiUrl("/api/agent/message"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: this.sessionId, message: text, sequenceId: this.sequenceId }),
+      body: JSON.stringify({ sessionId: this.sessionId, message: this.enrichMessage(text), sequenceId: this.sequenceId, variables }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -33,6 +90,38 @@ export class AgentforceSession {
     }
     const data = await res.json();
     return data.response || "I didn't catch that. Could you try again?";
+  }
+
+  /**
+   * Combined agent message + TTS in one call (saves a round-trip).
+   * Returns { response, audioData? } where audioData is an ArrayBuffer of WAV.
+   */
+  async sendMessageWithAudio(text: string): Promise<{ response: string; audioData?: ArrayBuffer }> {
+    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    this.sequenceId++;
+    const variables = this.getPersonaVariables();
+    const res = await fetch(apiUrl("/api/agent/speak"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: this.sessionId, message: this.enrichMessage(text), sequenceId: this.sequenceId, variables }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error(err.error || `Message failed: ${res.status}`);
+    }
+    const data = await res.json();
+    const response = data.response || "I didn't catch that. Could you try again?";
+
+    let audioData: ArrayBuffer | undefined;
+    if (data.audio) {
+      // Decode base64 WAV to ArrayBuffer
+      const binaryStr = atob(data.audio);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      audioData = bytes.buffer;
+    }
+
+    return { response, audioData };
   }
 
   async end(): Promise<void> {

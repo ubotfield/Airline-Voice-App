@@ -547,6 +547,42 @@ export class NativeVoiceService {
   // Greeting, Agent routing, TTS
   // ===================================================================
 
+  /**
+   * Send greeting with pre-fetched audio (from combined endpoint).
+   * Falls back to speakText if no audio provided.
+   */
+  async sendGreetingWithAudio(greetingResponse: string, audioData?: ArrayBuffer): Promise<void> {
+    dbg(`sendGreetingWithAudio: text=${greetingResponse ? greetingResponse.substring(0, 40) + "..." : "(empty)"} audio=${audioData ? audioData.byteLength + "B" : "none"}`);
+
+    if (!greetingResponse) {
+      this.greetingDone = true;
+      if (this.sttMode === "media-recorder") this.startRecordingChunk();
+      return;
+    }
+
+    this.callbacks.onStatusChange?.("Speaking...");
+    this.pipelineState = "speaking";
+    if (this.sttMode === "speech-recognition") this.pauseListening();
+
+    if (audioData && audioData.byteLength > 0) {
+      await this.playPreFetchedAudio(audioData);
+    } else {
+      await this.speakText(greetingResponse);
+    }
+
+    await new Promise(r => setTimeout(r, 150));
+    this.greetingDone = true;
+    this.pipelineState = "idle";
+
+    if (this.sttMode === "speech-recognition") {
+      await this.resumeListening();
+    } else {
+      await this.refreshMicStream();
+      this.callbacks.onStatusChange?.("Listening...");
+      if (this._isConnected && this.shouldRestart) this.startRecordingChunk();
+    }
+  }
+
   async sendGreeting(greetingResponse: string): Promise<void> {
     dbg(`sendGreeting: text=${greetingResponse ? greetingResponse.substring(0, 40) + "..." : "(empty)"}`);
 
@@ -624,13 +660,33 @@ export class NativeVoiceService {
     try {
       if (this.callbacks.onUserTranscription) {
         if (!this._isConnected) return;
-        const agentResponse = await this.callbacks.onUserTranscription(userText);
+        const result = await this.callbacks.onUserTranscription(userText);
         if (!this._isConnected) return;
 
-        if (agentResponse) {
+        // Support both string response and { text, audioData } combined response
+        let responseText: string;
+        let preAudio: ArrayBuffer | undefined;
+        if (result && typeof result === "object" && "text" in result) {
+          responseText = (result as any).text;
+          preAudio = (result as any).audioData;
+        } else {
+          responseText = result as string;
+        }
+
+        if (responseText) {
           this.callbacks.onStatusChange?.("Speaking...");
           this.pauseListening();
-          try { if (this._isConnected) await this.speakText(agentResponse); } catch { /* ignore */ }
+          try {
+            if (this._isConnected) {
+              if (preAudio && preAudio.byteLength > 0) {
+                // Use pre-fetched audio (skips separate TTS round-trip)
+                dbg(`Playing pre-fetched audio: ${preAudio.byteLength} bytes`);
+                await this.playPreFetchedAudio(preAudio);
+              } else {
+                await this.speakText(responseText);
+              }
+            }
+          } catch { /* ignore */ }
           if (!this._isConnected) return;
           await new Promise(r => setTimeout(r, 150));
           this.shouldRestart = true;
@@ -651,6 +707,31 @@ export class NativeVoiceService {
       }
     } finally {
       if (this.pipelineState === "speaking") this.pipelineState = "idle";
+    }
+  }
+
+  /**
+   * Play pre-fetched audio data (from combined agent+TTS endpoint).
+   * Tries <audio> element first, then AudioContext fallback.
+   */
+  private async playPreFetchedAudio(data: ArrayBuffer): Promise<void> {
+    // Try <audio> element first (most reliable)
+    try {
+      dbg("Playing pre-fetched audio via <audio> element...");
+      await this.playAudioViaElement(data, "audio/wav");
+      dbg("Pre-fetched audio playback succeeded ✓");
+      return;
+    } catch (e: any) {
+      dbg(`<audio> element failed: ${e?.message}, trying AudioContext...`);
+    }
+
+    // Fallback to AudioContext
+    await this.ensurePlaybackContext();
+    try {
+      await this.playAudioBuffer(data);
+      dbg("Pre-fetched AudioContext playback succeeded ✓");
+    } catch (e: any) {
+      dbg(`AudioContext also failed: ${e?.message}`);
     }
   }
 

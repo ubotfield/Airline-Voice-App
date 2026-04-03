@@ -152,7 +152,7 @@ app.post("/api/agent/session", async (_req, res) => {
 });
 
 app.post("/api/agent/message", async (req, res) => {
-  const { sessionId, message, sequenceId } = req.body;
+  const { sessionId, message, sequenceId, variables } = req.body;
 
   if (!sessionId || !message || !sequenceId) {
     return res.status(400).json({ error: "sessionId, message, and sequenceId are required" });
@@ -167,7 +167,7 @@ app.post("/api/agent/message", async (req, res) => {
         useApiUrl: true,
         body: JSON.stringify({
           message: { sequenceId, type: "Text", text: message },
-          variables: [],
+          variables: variables || [],
         }),
       }
     );
@@ -193,6 +193,77 @@ app.post("/api/agent/message", async (req, res) => {
     return res.json({ response: responseText, raw: data });
   } catch (err: any) {
     console.error("[message] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Combined Agent + TTS endpoint (saves round-trip) ─────────
+app.post("/api/agent/speak", async (req, res) => {
+  const { sessionId, message, sequenceId, variables } = req.body;
+  if (!sessionId || !message || !sequenceId) {
+    return res.status(400).json({ error: "sessionId, message, and sequenceId are required" });
+  }
+
+  try {
+    const totalStart = Date.now();
+
+    // Step 1: Get agent response
+    const sfRes = await sfFetch(
+      `/einstein/ai-agent/v1/sessions/${sessionId}/messages?sync=true`,
+      {
+        method: "POST",
+        useApiUrl: true,
+        body: JSON.stringify({
+          message: { sequenceId, type: "Text", text: message },
+          variables: variables || [],
+        }),
+      }
+    );
+
+    if (!sfRes.ok) {
+      const err = await sfRes.text();
+      console.error("[speak] Agent failed:", sfRes.status, err);
+      return res.status(sfRes.status).json({ error: "Agent message failed", detail: err });
+    }
+
+    const data = await sfRes.json();
+    let responseText = "";
+    if (data.messages && Array.isArray(data.messages)) {
+      responseText = data.messages
+        .filter((m: any) => m.type === "Text" || m.type === "Inform")
+        .map((m: any) => m.message || m.text || "")
+        .join("\n")
+        .trim();
+    }
+    if (!responseText && data.text) responseText = data.text;
+
+    const agentMs = Date.now() - totalStart;
+    console.log(`[speak] Agent: ${agentMs}ms — "${responseText.substring(0, 80)}..."`);
+
+    // Step 2: Generate TTS audio (in parallel with response)
+    const selectedVoice = LLM_GW_VOICE;
+    let audioBase64: string | null = null;
+
+    if (responseText && process.env.GEMINI_API_KEY) {
+      try {
+        const ttsStart = Date.now();
+        const wavBuffer = await synthesizeViaGeminiAPI(responseText, selectedVoice);
+        console.log(`[speak] TTS: ${Date.now() - ttsStart}ms, ${wavBuffer.length}B`);
+        audioBase64 = wavBuffer.toString("base64");
+      } catch (ttsErr: any) {
+        console.error("[speak] TTS failed (will send text-only):", ttsErr.message);
+      }
+    }
+
+    console.log(`[speak] Total: ${Date.now() - totalStart}ms`);
+    return res.json({
+      response: responseText,
+      audio: audioBase64,
+      audioType: "audio/wav",
+      raw: data,
+    });
+  } catch (err: any) {
+    console.error("[speak] Error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -629,6 +700,30 @@ app.put("/api/demo-persona", async (req, res) => {
   res.json({ success: true, action: "updated", id: "local" });
 });
 
+// ─── Latest Order Lookup ────────────────────────────────────────
+
+app.get("/api/latest-order", async (_req, res) => {
+  try {
+    const query = encodeURIComponent(
+      "SELECT Name, CreatedDate FROM QSR_Order__c ORDER BY CreatedDate DESC LIMIT 1"
+    );
+    const sfRes = await sfFetch(`/services/data/v62.0/query/?q=${query}`);
+    if (!sfRes.ok) {
+      return res.status(404).json({ error: "Could not query orders" });
+    }
+    const data = await sfRes.json();
+    if (data.records && data.records.length > 0) {
+      const order = data.records[0];
+      console.log(`[latest-order] Found: ${order.Name} (created ${order.CreatedDate})`);
+      return res.json({ orderNumber: order.Name, createdDate: order.CreatedDate });
+    }
+    return res.status(404).json({ error: "No orders found" });
+  } catch (err: any) {
+    console.error("[latest-order] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Send Receipt Route ─────────────────────────────────────────
 
 app.post("/api/send-receipt", async (req, res) => {
@@ -637,6 +732,24 @@ app.post("/api/send-receipt", async (req, res) => {
     return res.status(400).json({ error: "orderNumber and customerEmail are required" });
   }
 
+  // Normalize order number to match QSR_Order__c.Name format: "Order-NNNN"
+  let normalizedOrder = orderNumber.trim();
+  // Handle formats like "Order 21", "Order-21", "Order#21", "#21", "21", "ORD-123456", "Order-0021"
+  const numMatch = normalizedOrder.match(/(?:ORD|Order)[-\s#]*(\d+)$/i)
+    || normalizedOrder.match(/#\s*(\d+)$/i)
+    || normalizedOrder.match(/^(\d+)$/);
+  if (numMatch) {
+    const num = numMatch[1].padStart(4, "0");
+    normalizedOrder = `Order-${num}`;
+  } else if (!normalizedOrder.startsWith("Order-")) {
+    // If no pattern matched and it doesn't look like a valid order, try to extract any number
+    const anyNum = normalizedOrder.match(/(\d+)/);
+    if (anyNum) {
+      normalizedOrder = `Order-${anyNum[1].padStart(4, "0")}`;
+    }
+  }
+  console.log(`[send-receipt] Normalized: "${orderNumber}" → "${normalizedOrder}"`);
+
   try {
     // Call the InvocableMethod via Apex REST-like composite approach
     // Use /services/data/vXX.0/actions/custom/apex/SendOrderReceiptService
@@ -644,7 +757,7 @@ app.post("/api/send-receipt", async (req, res) => {
       method: "POST",
       body: JSON.stringify({
         inputs: [{
-          orderNumber: orderNumber,
+          orderNumber: normalizedOrder,
           customerEmail: customerEmail,
         }],
       }),
