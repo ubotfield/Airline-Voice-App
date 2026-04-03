@@ -670,26 +670,28 @@ export class NativeVoiceService {
           dbg(`TTS response: ${audioData.byteLength} bytes, ${contentType}`);
 
           if (audioData.byteLength > 0) {
-            // Try 1: <audio> element (most reliable on iOS)
-            try {
-              await this.playAudioViaElement(audioData, contentType);
-              dbg("<audio> element playback succeeded");
-              return;
-            } catch (e: any) {
-              dbg(`<audio> element failed, trying AudioContext: ${e?.message}`);
-            }
-
-            // Try 2: AudioContext (resume again just in case)
+            // Try 1: AudioContext (stays unlocked after initial tap — most reliable)
             await this.ensurePlaybackContext();
             try {
               await this.playAudioBuffer(audioData);
               dbg("AudioContext playback succeeded");
               return;
             } catch (e: any) {
-              dbg(`AudioContext failed: ${e?.message}`);
+              dbg(`AudioContext failed, trying <audio> element: ${e?.message}`);
             }
 
-            break; // Audio data OK but playback failed — try browser TTS
+            // Try 2: <audio> element fallback
+            try {
+              await this.playAudioViaElement(audioData, contentType);
+              dbg("<audio> element playback succeeded");
+              return;
+            } catch (e: any) {
+              dbg(`<audio> element also failed: ${e?.message}`);
+            }
+
+            // Both playback methods failed — skip speaking (no robotic fallback)
+            dbg("All playback methods failed — skipping speech");
+            return;
           }
         } else {
           dbg(`Server TTS HTTP ${res.status} (attempt ${attempt})`);
@@ -707,14 +709,9 @@ export class NativeVoiceService {
       }
     }
 
-    // Final fallback: browser speechSynthesis
+    // No robotic fallback — if server TTS failed, skip speaking entirely
     if (!this._isConnected) return;
-    dbg("Server TTS failed, falling back to browser speechSynthesis");
-    try {
-      await this.speakWithBrowserTTS(text);
-    } catch (err: any) {
-      dbg(`All TTS methods failed: ${err?.message}`);
-    }
+    dbg("Server TTS failed — skipping speech (no robotic fallback)");
   }
 
   /**
