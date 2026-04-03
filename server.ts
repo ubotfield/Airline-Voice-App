@@ -469,42 +469,62 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
   const model = "gemini-2.5-flash-preview-tts";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 
-  // Prefix with "Say:" to ensure the TTS model generates audio, not text
-  const ttsPrompt = `Say in a friendly conversational tone: ${text}`;
+  const MAX_RETRIES = 2;
+  let lastError = "";
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: ttsPrompt }] }],
-      generationConfig: {
-        responseModalities: ["AUDIO"],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: voice },
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voice },
+            },
           },
         },
-      },
-    }),
-  });
+      }),
+    });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini TTS API ${res.status}: ${errText.substring(0, 300)}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      lastError = `Gemini TTS API ${res.status}: ${errText.substring(0, 300)}`;
+      console.error(`[tts] Gemini attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
+      // Retry on 429 (rate limit) or 500/503 (transient)
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+        const backoffMs = attempt * 1000;
+        console.log(`[tts] Retrying Gemini in ${backoffMs}ms...`);
+        await new Promise(r => setTimeout(r, backoffMs));
+        continue;
+      }
+      throw new Error(lastError);
+    }
+
+    const data = await res.json();
+    const part = data.candidates?.[0]?.content?.parts?.[0];
+    const audioB64 = part?.inlineData?.data;
+    if (!audioB64) {
+      lastError = "No audio data in Gemini TTS response";
+      console.error(`[tts] Gemini attempt ${attempt}: ${lastError}`);
+      if (attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      throw new Error(lastError);
+    }
+
+    const mimeType = part?.inlineData?.mimeType || "unknown";
+    const pcmData = Buffer.from(audioB64, "base64");
+    console.log(`[tts] Gemini OK: mimeType=${mimeType}, pcm=${pcmData.length}B (attempt ${attempt})`);
+
+    const wavHeader = createWavHeader(pcmData.length);
+    return Buffer.concat([wavHeader, pcmData]);
   }
 
-  const data = await res.json();
-  const part = data.candidates?.[0]?.content?.parts?.[0];
-  const audioB64 = part?.inlineData?.data;
-  const mimeType = part?.inlineData?.mimeType || "unknown";
-  if (!audioB64) throw new Error("No audio data in Gemini TTS response");
-
-  console.log(`[tts] Gemini response mimeType: ${mimeType}, b64 length: ${audioB64.length}`);
-
-  // Decode base64 PCM and wrap in WAV header
-  const pcmData = Buffer.from(audioB64, "base64");
-  const wavHeader = createWavHeader(pcmData.length);
-  return Buffer.concat([wavHeader, pcmData]);
+  throw new Error(lastError || "Gemini TTS failed after retries");
 }
 
 app.post("/api/tts", async (req, res) => {
@@ -650,28 +670,8 @@ app.post("/api/send-receipt", async (req, res) => {
 
 app.get("/api/tts-test", async (_req, res) => {
   try {
-    // Quick inline test to see full Gemini response details
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-    const model = "gemini-2.5-flash-preview-tts";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-    const apiRes = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: "Say in a friendly conversational tone: Welcome to Scott's Fresh Kitchens." }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
-        },
-      }),
-    });
-    const data = await apiRes.json();
-    if (!apiRes.ok) return res.json({ ok: false, error: JSON.stringify(data).substring(0, 500) });
-    const part = data.candidates?.[0]?.content?.parts?.[0];
-    const mimeType = part?.inlineData?.mimeType || "none";
-    const b64len = part?.inlineData?.data?.length || 0;
-    const pcmBytes = b64len ? Buffer.from(part.inlineData.data, "base64").length : 0;
-    res.json({ ok: true, mimeType, b64Length: b64len, pcmBytes, wavBytes: pcmBytes + 44 });
+    const wavBuffer = await synthesizeViaGeminiAPI("Welcome to Scott's Fresh Kitchens. How can I help you today?", "Kore");
+    res.json({ ok: true, bytes: wavBuffer.length });
   } catch (err: any) {
     res.json({ ok: false, error: err.message });
   }
