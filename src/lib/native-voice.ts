@@ -338,8 +338,19 @@ export class NativeVoiceService {
       }
     };
     this.recognition.onerror = (event: any) => {
+      dbg(`recognition.onerror: ${event.error}`);
       if (event.error === "no-speech" || event.error === "aborted") {
         if (this.shouldRestart && this._isConnected) this.restartRecognition();
+        return;
+      }
+      // audio-capture errors are transient (e.g. during TTS playback) — retry
+      if (event.error === "audio-capture") {
+        dbg("audio-capture error — will retry recognition in 500ms");
+        if (this.shouldRestart && this._isConnected) {
+          setTimeout(() => {
+            if (this.shouldRestart && this._isConnected) this.restartRecognition();
+          }, 500);
+        }
         return;
       }
       this.callbacks.onError?.(event.error);
@@ -806,7 +817,7 @@ export class NativeVoiceService {
           if (settled) return;
           settled = true;
           clearTimeout(safetyTimeout);
-          try { audio.pause(); audio.src = ""; } catch { /* ignore */ }
+          try { audio.pause(); audio.removeAttribute("src"); audio.load(); } catch { /* ignore */ }
           URL.revokeObjectURL(url);
           if (success) resolve(); else reject(reason);
         };
