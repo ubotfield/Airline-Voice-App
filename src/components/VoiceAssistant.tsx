@@ -117,59 +117,71 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             }
             setStatus("Processing...");
 
-            // Use combined agent+TTS endpoint to save a round-trip
-            const { response, audioData } = await agentRef.current.sendMessageWithAudio(userText);
+            try {
+              // Use combined agent+TTS endpoint with a 25s timeout
+              const timeoutPromise = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("timeout")), 25000)
+              );
+              const { response, audioData } = await Promise.race([
+                agentRef.current.sendMessageWithAudio(userText),
+                timeoutPromise,
+              ]);
 
-            // Auto-detect order confirmation from agent response
-            const orderMatch = response.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
-              || response.match(/(Order-\d{3,5})/i)
-              || response.match(/#\s*([\w]+-\d+)/i);
+              // Auto-detect order confirmation — ONLY truly final confirmations
+              // Must have "placed" or "confirmed" near "order" — NOT "your order for" (too broad)
+              const orderMatch = response.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
+                || response.match(/(Order-\d{3,5})/i)
+                || response.match(/#\s*([\w]+-\d+)/i);
 
-            const isConfirmation = /(?:placed|confirmed|submitted|completed)\s*(?:successfully)?|(?:order|it)\s+(?:is|has been)\s+(?:placed|confirmed|ready)|your order for/i.test(response);
+              const isConfirmation = /order\s+(?:has been|is)\s+(?:placed|confirmed)|(?:placed|confirmed|submitted)\s+successfully|order\s+confirmed/i.test(response);
 
-            if (isConfirmation || (orderMatch && /order\s*(?:number|#|is)/i.test(response))) {
-              let finalOrderNumber = orderMatch ? orderMatch[1] : null;
+              if (isConfirmation) {
+                let finalOrderNumber = orderMatch ? orderMatch[1] : null;
 
-              // If no order number in confirmation, try two fallbacks:
-              // 1. Ask the agent for it
-              if (!finalOrderNumber && agentRef.current?.isActive) {
-                try {
-                  const followUp = await agentRef.current.sendMessage("What is my order number?");
-                  const followUpMatch = followUp.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
-                    || followUp.match(/(Order-\d{3,5})/i)
-                    || followUp.match(/#\s*([\w]+-\d+)/i);
-                  if (followUpMatch) {
-                    finalOrderNumber = followUpMatch[1];
-                  }
-                } catch (err) {
-                  console.warn("[voice] Order number follow-up failed:", err);
-                }
-              }
-
-              // 2. If still no order number, fetch the latest order from Salesforce
-              if (!finalOrderNumber) {
-                try {
-                  const latestRes = await fetch(apiUrl("/api/latest-order"));
-                  if (latestRes.ok) {
-                    const latestData = await latestRes.json();
-                    if (latestData.orderNumber) {
-                      finalOrderNumber = latestData.orderNumber;
-                      console.log("[voice] Got latest order from SF:", finalOrderNumber);
+                // If no order number in confirmation, try two fallbacks:
+                // 1. Ask the agent for it
+                if (!finalOrderNumber && agentRef.current?.isActive) {
+                  try {
+                    const followUp = await agentRef.current.sendMessage("What is my order number?");
+                    const followUpMatch = followUp.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
+                      || followUp.match(/(Order-\d{3,5})/i)
+                      || followUp.match(/#\s*([\w]+-\d+)/i);
+                    if (followUpMatch) {
+                      finalOrderNumber = followUpMatch[1];
                     }
+                  } catch (err) {
+                    console.warn("[voice] Order number follow-up failed:", err);
                   }
-                } catch (err) {
-                  console.warn("[voice] Latest order lookup failed:", err);
                 }
+
+                // 2. If still no order number, fetch the latest order from Salesforce
+                if (!finalOrderNumber) {
+                  try {
+                    const latestRes = await fetch(apiUrl("/api/latest-order"));
+                    if (latestRes.ok) {
+                      const latestData = await latestRes.json();
+                      if (latestData.orderNumber) {
+                        finalOrderNumber = latestData.orderNumber;
+                        console.log("[voice] Got latest order from SF:", finalOrderNumber);
+                      }
+                    }
+                  } catch (err) {
+                    console.warn("[voice] Latest order lookup failed:", err);
+                  }
+                }
+
+                onOrderPlaced?.({
+                  orderNumber: finalOrderNumber || `Order-0000`,
+                  timestamp: new Date(),
+                });
               }
 
-              onOrderPlaced?.({
-                orderNumber: finalOrderNumber || `Order-0000`,
-                timestamp: new Date(),
-              });
+              // Return response with pre-fetched audio to skip separate TTS call
+              return { text: response, audioData } as any;
+            } catch (err: any) {
+              console.warn("[voice] Agent call failed:", err?.message);
+              return "I'm sorry, that took too long. Could you try again?";
             }
-
-            // Return response with pre-fetched audio to skip separate TTS call
-            return { text: response, audioData } as any;
           },
         });
       } catch (err: any) {
