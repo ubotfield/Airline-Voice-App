@@ -84,8 +84,8 @@ export class NativeVoiceService {
   private bargeInTriggered = false;
   private currentAudioElement: HTMLAudioElement | null = null;
   private currentAudioSource: AudioBufferSourceNode | null = null;
-  private static readonly BARGE_IN_THRESHOLD = 0.04; // Higher than silence threshold to avoid feedback
-  private static readonly BARGE_IN_CONFIRM_MS = 300; // Confirm speech for 300ms before interrupting
+  private static readonly BARGE_IN_THRESHOLD = 0.08; // Must be well above speaker feedback level
+  private static readonly BARGE_IN_CONFIRM_MS = 400; // Confirm speech for 400ms before interrupting
 
   // TTS voice preference (cached)
   private preferredVoice: SpeechSynthesisVoice | null = null;
@@ -711,8 +711,7 @@ export class NativeVoiceService {
     this.callbacks.onStatusChange?.("Speaking...");
     this.pipelineState = "speaking";
     if (this.sttMode === "speech-recognition") this.pauseListening();
-    this.bargeInTriggered = false;
-    this.startBargeInDetection();
+    // No barge-in during greetings — speaker feedback would falsely trigger it
 
     if (audioData && audioData.byteLength > 0) {
       await this.playPreFetchedAudio(audioData);
@@ -720,8 +719,7 @@ export class NativeVoiceService {
       await this.speakText(greetingResponse);
     }
 
-    this.stopBargeInDetection();
-    if (!this.bargeInTriggered) await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 150));
     this.greetingDone = true;
     this.pipelineState = "idle";
 
@@ -746,13 +744,11 @@ export class NativeVoiceService {
     this.callbacks.onStatusChange?.("Speaking...");
     this.pipelineState = "speaking";
     if (this.sttMode === "speech-recognition") this.pauseListening();
-    this.bargeInTriggered = false;
-    this.startBargeInDetection();
+    // No barge-in during greetings — speaker feedback would falsely trigger it
 
     await this.speakText(greetingResponse);
 
-    this.stopBargeInDetection();
-    if (!this.bargeInTriggered) await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 150));
     this.greetingDone = true;
     this.pipelineState = "idle";
 
