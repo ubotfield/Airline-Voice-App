@@ -1,18 +1,17 @@
 /**
- * NativeVoiceService V2 — Cross-platform voice with dual STT strategy:
+ * NativeVoiceService V3 — Cross-platform voice with smart STT strategy:
  *
- *   Strategy A (Safari browser only): Web Speech API (SpeechRecognition)
- *   Strategy B (Everything else): MediaRecorder -> server-side Gemini STT
+ *   Strategy A (PWA + browser): Web Speech API first, MediaRecorder fallback
+ *   Strategy B (no Web Speech API): MediaRecorder -> server-side Gemini STT
  *
- * TTS: Salesforce LLM Gateway (high-quality Gemini voices like Kore/Aoede)
- * with triple-fallback: <audio> element → AudioContext → browser speechSynthesis.
- *
- * KEY DESIGN (v3 — iOS-proof):
+ * V3 OPTIMIZATIONS:
+ *   - Web Speech API tried first EVEN in PWA mode (faster, zero server cost)
+ *   - Silence detection: recording stops ~800ms after user stops speaking (saves ~2-3s)
+ *   - Streaming TTS: audio chunks play as they arrive (time-to-first-audio ~500ms)
  *   - MediaRecorder pipeline is COMPLETELY INDEPENDENT of AudioContext.
- *   - Recording uses simple timer-based 4-second chunks. No silence detection.
  *   - After every TTS playback, a FRESH MediaStream is acquired via getUserMedia().
- *   - AudioContext is ONLY used for cosmetic volume bars in the UI.
- *   - Explicit state machine prevents stuck states: idle → recording → transcribing → speaking → idle
+ *   - AudioContext used for volume bars AND silence detection.
+ *   - Explicit state machine: idle → recording → transcribing → speaking → idle
  */
 
 import { apiUrl } from "./api-base";
@@ -27,7 +26,7 @@ export interface NativeVoiceCallbacks {
   onError?: (error: string) => void;
   onVolumeChange?: (volume: number) => void;
   onStatusChange?: (status: string) => void;
-  onUserTranscription?: (text: string) => Promise<string>;
+  onUserTranscription?: (text: string) => Promise<string | any>;
 }
 
 type SttMode = "speech-recognition" | "media-recorder";
@@ -69,6 +68,15 @@ export class NativeVoiceService {
   private supportedMimeType: string = "audio/mp4";
   private pipelineSafetyTimer: number | null = null;
   private peakVolumeDuringChunk = 0;
+
+  // Silence detection
+  private silenceDetectionInterval: number | null = null;
+  private silenceStartTime: number | null = null;
+  private speechDetected = false;
+  private static readonly SILENCE_THRESHOLD = 0.02; // Volume below this = silence
+  private static readonly SILENCE_DURATION_MS = 800; // Stop after 800ms of silence
+  private static readonly MAX_RECORD_DURATION_MS = 8000; // Hard cap at 8s
+  private static readonly MIN_SPEECH_DURATION_MS = 300; // Minimum speech before stopping
 
   // TTS voice preference (cached)
   private preferredVoice: SpeechSynthesisVoice | null = null;
@@ -181,9 +189,9 @@ export class NativeVoiceService {
 
     const isPWA = isStandalonePWA();
 
-    if (isPWA) {
-      this.sttMode = "media-recorder";
-    } else if (SpeechRecognition) {
+    // V3: Try Web Speech API first EVEN in PWA mode — it's instant (no server round-trip).
+    // Falls back to MediaRecorder only if Web Speech API is not available.
+    if (SpeechRecognition) {
       this.sttMode = "speech-recognition";
     } else {
       this.sttMode = "media-recorder";
@@ -364,7 +372,7 @@ export class NativeVoiceService {
   // Strategy B: MediaRecorder -> Server-side STT
   // ===================================================================
 
-  private static readonly CHUNK_DURATION_MS = 4000;
+  private static readonly CHUNK_DURATION_MS = 8000; // Hard cap (silence detection stops early)
   private static readonly MIN_AUDIO_SIZE = 2000;
 
   private startRecordingChunk(): void {
@@ -450,19 +458,80 @@ export class NativeVoiceService {
       return;
     }
 
+    // Start silence detection — stop recording early when user stops speaking
+    this.speechDetected = false;
+    this.silenceStartTime = null;
+    this.startSilenceDetection();
+
+    // Hard cap timer (silence detection stops it earlier)
     this.chunkTimer = window.setTimeout(() => {
       this.chunkTimer = null;
+      this.stopSilenceDetection();
       if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
         try { this.mediaRecorder.stop(); } catch {
           this.pipelineState = "idle";
           this.scheduleNextChunk();
         }
       }
-    }, NativeVoiceService.CHUNK_DURATION_MS);
+    }, NativeVoiceService.MAX_RECORD_DURATION_MS);
   }
 
   private clearChunkTimer(): void {
     if (this.chunkTimer !== null) { clearTimeout(this.chunkTimer); this.chunkTimer = null; }
+  }
+
+  /**
+   * Monitor audio volume during recording. When speech is detected followed by
+   * silence for SILENCE_DURATION_MS, stop recording immediately.
+   * This saves ~2-3 seconds per turn compared to the fixed 4-second timer.
+   */
+  private startSilenceDetection(): void {
+    this.stopSilenceDetection();
+    if (!this.volumeAnalyser) return;
+
+    const dataArray = new Uint8Array(this.volumeAnalyser.frequencyBinCount);
+    const recordingStartTime = Date.now();
+
+    this.silenceDetectionInterval = window.setInterval(() => {
+      if (!this.volumeAnalyser || this.pipelineState !== "recording") {
+        this.stopSilenceDetection();
+        return;
+      }
+
+      this.volumeAnalyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+      const volume = sum / dataArray.length / 255;
+
+      const elapsed = Date.now() - recordingStartTime;
+
+      if (volume > NativeVoiceService.SILENCE_THRESHOLD) {
+        // Voice detected
+        this.speechDetected = true;
+        this.silenceStartTime = null;
+      } else if (this.speechDetected && elapsed > NativeVoiceService.MIN_SPEECH_DURATION_MS) {
+        // Silence after speech — start counting
+        if (this.silenceStartTime === null) {
+          this.silenceStartTime = Date.now();
+        } else if (Date.now() - this.silenceStartTime >= NativeVoiceService.SILENCE_DURATION_MS) {
+          // Enough silence — stop recording NOW
+          dbg(`Silence detected after ${elapsed}ms — stopping recording early`);
+          this.stopSilenceDetection();
+          this.clearChunkTimer();
+          if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+            try { this.mediaRecorder.stop(); } catch { /* ignore */ }
+          }
+        }
+      }
+    }, 50); // Check every 50ms for responsive silence detection
+  }
+
+  private stopSilenceDetection(): void {
+    if (this.silenceDetectionInterval !== null) {
+      clearInterval(this.silenceDetectionInterval);
+      this.silenceDetectionInterval = null;
+    }
+    this.silenceStartTime = null;
   }
 
   private scheduleNextChunk(): void {
@@ -708,6 +777,85 @@ export class NativeVoiceService {
     } finally {
       if (this.pipelineState === "speaking") this.pipelineState = "idle";
     }
+  }
+
+  /**
+   * Play streaming PCM audio chunks using AudioContext worklet-style scheduling.
+   * Each chunk is 24kHz 16-bit mono PCM (raw, no WAV header).
+   * Chunks are decoded and queued for gapless playback as they arrive.
+   */
+  private streamingAudioQueue: ArrayBuffer[] = [];
+  private streamingPlaybackActive = false;
+  private streamingResolve: (() => void) | null = null;
+
+  async startStreamingPlayback(): Promise<void> {
+    this.streamingAudioQueue = [];
+    this.streamingPlaybackActive = true;
+    await this.ensurePlaybackContext();
+  }
+
+  addStreamingChunk(pcmBase64: string): void {
+    // Decode base64 to raw PCM bytes
+    const binaryStr = atob(pcmBase64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+    this.streamingAudioQueue.push(bytes.buffer);
+
+    // Start playback if not already playing
+    if (this.streamingPlaybackActive && this.streamingAudioQueue.length === 1) {
+      this.drainStreamingQueue();
+    }
+  }
+
+  private async drainStreamingQueue(): Promise<void> {
+    if (!this.playbackContext || this.playbackContext.state === "closed") return;
+    if (this.playbackContext.state === "suspended") {
+      await this.playbackContext.resume();
+    }
+
+    while (this.streamingAudioQueue.length > 0 && this.streamingPlaybackActive) {
+      const pcmData = this.streamingAudioQueue.shift()!;
+      try {
+        // Convert raw PCM to AudioBuffer (24kHz, 16-bit, mono)
+        const samples = new Int16Array(pcmData);
+        const audioBuffer = this.playbackContext!.createBuffer(1, samples.length, 24000);
+        const channelData = audioBuffer.getChannelData(0);
+        for (let i = 0; i < samples.length; i++) {
+          channelData[i] = samples[i] / 32768; // Int16 to Float32
+        }
+
+        await new Promise<void>((resolve) => {
+          const source = this.playbackContext!.createBufferSource();
+          source.buffer = audioBuffer;
+          const gainNode = this.playbackContext!.createGain();
+          gainNode.gain.setValueAtTime(1.5, this.playbackContext!.currentTime);
+          source.connect(gainNode);
+          gainNode.connect(this.playbackContext!.destination);
+          source.onended = () => resolve();
+          source.start();
+        });
+      } catch (e: any) {
+        dbg(`Streaming chunk playback error: ${e?.message}`);
+      }
+    }
+
+    // If done and no more chunks coming, resolve the streaming promise
+    if (!this.streamingPlaybackActive && this.streamingAudioQueue.length === 0) {
+      this.streamingResolve?.();
+      this.streamingResolve = null;
+    }
+  }
+
+  finishStreamingPlayback(): Promise<void> {
+    this.streamingPlaybackActive = false;
+    if (this.streamingAudioQueue.length === 0) {
+      return Promise.resolve();
+    }
+    // Wait for remaining queue to drain
+    return new Promise<void>((resolve) => {
+      this.streamingResolve = resolve;
+      this.drainStreamingQueue();
+    });
   }
 
   /**
@@ -1062,6 +1210,7 @@ export class NativeVoiceService {
     this.preUnlockedContext = null;
 
     this.stopVolumeMonitor();
+    this.stopSilenceDetection();
     this.clearChunkTimer();
     this.clearPipelineSafety();
 

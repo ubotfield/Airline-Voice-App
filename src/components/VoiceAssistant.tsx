@@ -7,10 +7,12 @@ import { apiUrl } from "../lib/api-base";
 import { cn } from "../lib/utils";
 
 /**
- * VoiceAssistant V2 — inline popup bar.
+ * VoiceAssistant V3 — inline popup bar with streaming TTS.
  *
- * V2 simplification: ALWAYS uses NativeVoiceService (Web Speech API + browser TTS).
- * No Gemini Live WebSocket. No ElevenLabs. Zero external voice API costs.
+ * V3 optimizations:
+ * - Streaming TTS: audio chunks play as they arrive (~500ms to first audio)
+ * - Silence detection: recording stops when user stops speaking
+ * - Web Speech API tried first even in PWA mode
  */
 
 interface VoiceAssistantProps {
@@ -118,17 +120,66 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             setStatus("Processing...");
 
             try {
-              // Use combined agent+TTS endpoint with a 25s timeout
+              // Try streaming endpoint first (audio starts playing ~500ms faster)
               const timeoutPromise = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("timeout")), 25000)
+                setTimeout(() => reject(new Error("timeout")), 30000)
               );
-              const { response, audioData } = await Promise.race([
-                agentRef.current.sendMessageWithAudio(userText),
-                timeoutPromise,
-              ]);
+
+              let streamingWorked = false;
+              let streamResponse = "";
+              let gotFullAudio = false;
+              let fullAudioData: ArrayBuffer | undefined;
+
+              try {
+                // Start streaming playback on the voice service
+                await nativeRef.current?.startStreamingPlayback();
+
+                const { response } = await Promise.race([
+                  agentRef.current!.sendMessageStreaming(userText, {
+                    onText: (text) => {
+                      streamResponse = text;
+                      setStatus("Speaking...");
+                    },
+                    onAudioChunk: (pcmBase64, _index) => {
+                      nativeRef.current?.addStreamingChunk(pcmBase64);
+                      streamingWorked = true;
+                    },
+                    onAudioFull: (wavBase64) => {
+                      // Fallback: full audio arrived instead of chunks
+                      gotFullAudio = true;
+                      const binaryStr = atob(wavBase64);
+                      const bytes = new Uint8Array(binaryStr.length);
+                      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+                      fullAudioData = bytes.buffer;
+                    },
+                  }),
+                  timeoutPromise,
+                ]);
+
+                streamResponse = response || streamResponse;
+
+                // Wait for streaming audio to finish playing
+                if (streamingWorked) {
+                  await nativeRef.current?.finishStreamingPlayback();
+                } else if (gotFullAudio && fullAudioData) {
+                  // Play full audio fallback
+                  return { text: streamResponse, audioData: fullAudioData } as any;
+                }
+              } catch (streamErr: any) {
+                console.warn("[voice] Streaming failed, falling back:", streamErr?.message);
+                // Fall back to non-streaming endpoint
+                const { response, audioData } = await Promise.race([
+                  agentRef.current!.sendMessageWithAudio(userText),
+                  timeoutPromise,
+                ]);
+                streamResponse = response;
+                fullAudioData = audioData;
+                return { text: streamResponse, audioData: fullAudioData } as any;
+              }
+
+              const response = streamResponse;
 
               // Auto-detect order confirmation — ONLY truly final confirmations
-              // Must have "placed" or "confirmed" near "order" — NOT "your order for" (too broad)
               const orderMatch = response.match(/Order[-\s]?#?\s*([\w]+-?\d+)/i)
                 || response.match(/(Order-\d{3,5})/i)
                 || response.match(/#\s*([\w]+-\d+)/i);
@@ -176,8 +227,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 });
               }
 
-              // Return response with pre-fetched audio to skip separate TTS call
-              return { text: response, audioData } as any;
+              // If streaming worked, audio already played — return text only
+              if (streamingWorked) {
+                return { text: response, audioData: undefined } as any;
+              }
+              // Otherwise return with full audio for native-voice to play
+              return { text: response, audioData: fullAudioData } as any;
             } catch (err: any) {
               console.warn("[voice] Agent call failed:", err?.message);
               return "I'm sorry, that took too long. Could you try again?";

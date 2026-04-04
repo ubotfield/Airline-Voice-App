@@ -268,6 +268,153 @@ app.post("/api/agent/speak", async (req, res) => {
   }
 });
 
+// ─── Streaming Agent + TTS (SSE — audio chunks arrive as they generate) ─────
+app.post("/api/agent/speak-stream", async (req, res) => {
+  const { sessionId, message, sequenceId, variables } = req.body;
+  if (!sessionId || !message || !sequenceId) {
+    return res.status(400).json({ error: "sessionId, message, and sequenceId are required" });
+  }
+
+  // Set up SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
+  res.flushHeaders();
+
+  try {
+    const totalStart = Date.now();
+
+    // Step 1: Get agent response (same as before)
+    const sfRes = await sfFetch(
+      `/einstein/ai-agent/v1/sessions/${sessionId}/messages?sync=true`,
+      {
+        method: "POST",
+        useApiUrl: true,
+        body: JSON.stringify({
+          message: { sequenceId, type: "Text", text: message },
+          variables: variables || [],
+        }),
+      }
+    );
+
+    if (!sfRes.ok) {
+      const err = await sfRes.text();
+      console.error("[speak-stream] Agent failed:", sfRes.status, err);
+      res.write(`data: ${JSON.stringify({ type: "error", error: "Agent message failed" })}\n\n`);
+      return res.end();
+    }
+
+    const data = await sfRes.json();
+    let responseText = "";
+    if (data.messages && Array.isArray(data.messages)) {
+      responseText = data.messages
+        .filter((m: any) => m.type === "Text" || m.type === "Inform")
+        .map((m: any) => m.message || m.text || "")
+        .join("\n")
+        .trim();
+    }
+    if (!responseText && data.text) responseText = data.text;
+
+    const agentMs = Date.now() - totalStart;
+    console.log(`[speak-stream] Agent: ${agentMs}ms — "${responseText.substring(0, 80)}..."`);
+
+    // Send agent text immediately so client can show it
+    res.write(`data: ${JSON.stringify({ type: "text", response: responseText, raw: data })}\n\n`);
+
+    // Step 2: Stream TTS audio via Gemini API
+    if (responseText && process.env.GEMINI_API_KEY) {
+      const ttsStart = Date.now();
+      const selectedVoice = LLM_GW_VOICE;
+
+      try {
+        // Use Gemini streaming TTS — sends audio as it generates
+        const model = "gemini-2.5-flash-preview-tts";
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+
+        const ttsRes = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: responseText }] }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: selectedVoice },
+                },
+              },
+            },
+          }),
+        });
+
+        if (ttsRes.ok && ttsRes.body) {
+          const reader = ttsRes.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let chunkCount = 0;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            // Parse SSE events from the buffer
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || ""; // Keep incomplete last line
+
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              const jsonStr = line.slice(6).trim();
+              if (!jsonStr || jsonStr === "[DONE]") continue;
+
+              try {
+                const chunk = JSON.parse(jsonStr);
+                const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                if (audioB64) {
+                  chunkCount++;
+                  // Send audio chunk to client as base64 PCM
+                  res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkCount })}\n\n`);
+                }
+              } catch { /* skip malformed JSON */ }
+            }
+          }
+
+          console.log(`[speak-stream] TTS: ${Date.now() - ttsStart}ms, ${chunkCount} chunks`);
+        } else {
+          console.error("[speak-stream] Gemini streaming TTS failed:", ttsRes.status);
+          // Fall back to non-streaming TTS
+          try {
+            const wavBuffer = await synthesizeViaGeminiAPI(responseText, selectedVoice);
+            const audioBase64 = wavBuffer.toString("base64");
+            res.write(`data: ${JSON.stringify({ type: "audio-full", audio: audioBase64 })}\n\n`);
+            console.log(`[speak-stream] Fallback TTS: ${Date.now() - ttsStart}ms, ${wavBuffer.length}B`);
+          } catch (fallbackErr: any) {
+            console.error("[speak-stream] Fallback TTS also failed:", fallbackErr.message);
+          }
+        }
+      } catch (ttsErr: any) {
+        console.error("[speak-stream] TTS error:", ttsErr.message);
+        // Fall back to non-streaming
+        try {
+          const wavBuffer = await synthesizeViaGeminiAPI(responseText, selectedVoice);
+          res.write(`data: ${JSON.stringify({ type: "audio-full", audio: wavBuffer.toString("base64") })}\n\n`);
+        } catch { /* give up on audio */ }
+      }
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "done", totalMs: Date.now() - totalStart })}\n\n`);
+    console.log(`[speak-stream] Total: ${Date.now() - totalStart}ms`);
+    return res.end();
+  } catch (err: any) {
+    console.error("[speak-stream] Error:", err.message);
+    try {
+      res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+    } catch { /* ignore */ }
+    return res.end();
+  }
+});
+
 // CRITICAL: Agent API DELETE must NOT have a body or Content-Type header
 app.delete("/api/agent/session/:sessionId", async (req, res) => {
   const { sessionId } = req.params;

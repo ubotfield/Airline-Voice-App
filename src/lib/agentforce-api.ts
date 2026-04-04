@@ -124,6 +124,86 @@ export class AgentforceSession {
     return { response, audioData };
   }
 
+  /**
+   * Streaming agent message + TTS via SSE.
+   * Calls onText when agent text arrives, onAudioChunk for each PCM chunk,
+   * and onDone when complete. Audio starts playing before full synthesis.
+   */
+  async sendMessageStreaming(
+    text: string,
+    callbacks: {
+      onText?: (response: string, raw?: any) => void;
+      onAudioChunk?: (pcmBase64: string, index: number) => void;
+      onAudioFull?: (wavBase64: string) => void;
+      onDone?: () => void;
+      onError?: (error: string) => void;
+    }
+  ): Promise<{ response: string }> {
+    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    this.sequenceId++;
+    const variables = this.getPersonaVariables();
+
+    const res = await fetch(apiUrl("/api/agent/speak-stream"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: this.sessionId,
+        message: this.enrichMessage(text),
+        sequenceId: this.sequenceId,
+        variables,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error(err.error || `Stream failed: ${res.status}`);
+    }
+
+    let responseText = "";
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr) continue;
+
+        try {
+          const event = JSON.parse(jsonStr);
+          switch (event.type) {
+            case "text":
+              responseText = event.response || "";
+              callbacks.onText?.(responseText, event.raw);
+              break;
+            case "audio":
+              callbacks.onAudioChunk?.(event.chunk, event.index);
+              break;
+            case "audio-full":
+              callbacks.onAudioFull?.(event.audio);
+              break;
+            case "done":
+              callbacks.onDone?.();
+              break;
+            case "error":
+              callbacks.onError?.(event.error);
+              break;
+          }
+        } catch { /* skip malformed JSON */ }
+      }
+    }
+
+    return { response: responseText || "I didn't catch that. Could you try again?" };
+  }
+
   async end(): Promise<void> {
     if (!this.sessionId) return;
     try {
