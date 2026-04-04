@@ -439,9 +439,17 @@ app.delete("/api/agent/session/:sessionId", async (req, res) => {
   }
 });
 
-// ─── Menu Route ──────────────────────────────────────────────────
+// ─── Menu Route (with 5-minute cache) ────────────────────────────
+
+let menuCache: { data: any; expiry: number } | null = null;
+const MENU_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 app.get("/api/menu", async (_req, res) => {
+  // Return cached data if still fresh
+  if (menuCache && Date.now() < menuCache.expiry) {
+    return res.json(menuCache.data);
+  }
+
   try {
     const query = encodeURIComponent(
       "SELECT Id, Name, Price__c, Description__c, Calories__c, Is_Popular__c, Is_Available__c, Customizations__c, Menu_Category__r.Name FROM Menu_Item__c WHERE Is_Available__c = true ORDER BY Menu_Category__r.Sort_Order__c, Is_Popular__c DESC, Name ASC"
@@ -464,7 +472,9 @@ app.get("/api/menu", async (_req, res) => {
       available: r.Is_Available__c,
       customizations: r.Customizations__c ? JSON.parse(r.Customizations__c) : null,
     }));
-    return res.json({ items, source: "salesforce" });
+    const result = { items, source: "salesforce" };
+    menuCache = { data: result, expiry: Date.now() + MENU_CACHE_TTL };
+    return res.json(result);
   } catch (err: any) {
     console.error("[menu] Error:", err.message);
     return res.json({ items: getStaticMenu(), source: "static" });

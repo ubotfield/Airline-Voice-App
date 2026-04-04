@@ -74,9 +74,18 @@ export class NativeVoiceService {
   private silenceStartTime: number | null = null;
   private speechDetected = false;
   private static readonly SILENCE_THRESHOLD = 0.02; // Volume below this = silence
-  private static readonly SILENCE_DURATION_MS = 800; // Stop after 800ms of silence
+  private static readonly SILENCE_DURATION_MS = 500; // Stop after 500ms of silence (tuned for speed)
   private static readonly MAX_RECORD_DURATION_MS = 8000; // Hard cap at 8s
   private static readonly MIN_SPEECH_DURATION_MS = 300; // Minimum speech before stopping
+
+  // Barge-in: user can interrupt playback by speaking
+  private bargeInDetectionInterval: number | null = null;
+  private bargeInSpeechStart: number | null = null;
+  private bargeInTriggered = false;
+  private currentAudioElement: HTMLAudioElement | null = null;
+  private currentAudioSource: AudioBufferSourceNode | null = null;
+  private static readonly BARGE_IN_THRESHOLD = 0.04; // Higher than silence threshold to avoid feedback
+  private static readonly BARGE_IN_CONFIRM_MS = 300; // Confirm speech for 300ms before interrupting
 
   // TTS voice preference (cached)
   private preferredVoice: SpeechSynthesisVoice | null = null;
@@ -534,6 +543,76 @@ export class NativeVoiceService {
     this.silenceStartTime = null;
   }
 
+  // ─── Barge-in detection (during playback) ────────────────────────
+
+  private startBargeInDetection(): void {
+    this.stopBargeInDetection();
+    if (!this.volumeAnalyser) return;
+    this.bargeInTriggered = false;
+    this.bargeInSpeechStart = null;
+
+    const dataArray = new Uint8Array(this.volumeAnalyser.frequencyBinCount);
+
+    this.bargeInDetectionInterval = window.setInterval(() => {
+      if (!this.volumeAnalyser || this.pipelineState !== "speaking") {
+        this.stopBargeInDetection();
+        return;
+      }
+
+      this.volumeAnalyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+      const volume = sum / dataArray.length / 255;
+
+      if (volume > NativeVoiceService.BARGE_IN_THRESHOLD) {
+        if (this.bargeInSpeechStart === null) {
+          this.bargeInSpeechStart = Date.now();
+        } else if (Date.now() - this.bargeInSpeechStart >= NativeVoiceService.BARGE_IN_CONFIRM_MS) {
+          dbg("Barge-in detected — interrupting playback");
+          this.bargeInTriggered = true;
+          this.stopBargeInDetection();
+          this.cancelAllPlayback();
+        }
+      } else {
+        this.bargeInSpeechStart = null;
+      }
+    }, 50);
+  }
+
+  private stopBargeInDetection(): void {
+    if (this.bargeInDetectionInterval !== null) {
+      clearInterval(this.bargeInDetectionInterval);
+      this.bargeInDetectionInterval = null;
+    }
+    this.bargeInSpeechStart = null;
+  }
+
+  private cancelAllPlayback(): void {
+    // Stop Audio element playback
+    if (this.currentAudioElement) {
+      try {
+        this.currentAudioElement.pause();
+        this.currentAudioElement.removeAttribute("src");
+        this.currentAudioElement.load();
+      } catch { /* ignore */ }
+      this.currentAudioElement = null;
+    }
+
+    // Stop AudioBufferSource playback
+    if (this.currentAudioSource) {
+      try { this.currentAudioSource.stop(); } catch { /* ignore */ }
+      this.currentAudioSource = null;
+    }
+
+    // Stop streaming playback
+    this.streamingPlaybackActive = false;
+    this.streamingAudioQueue = [];
+    if (this.streamingResolve) {
+      this.streamingResolve();
+      this.streamingResolve = null;
+    }
+  }
+
   private scheduleNextChunk(): void {
     if (!this.shouldRestart || !this._isConnected) return;
     setTimeout(() => {
@@ -632,6 +711,8 @@ export class NativeVoiceService {
     this.callbacks.onStatusChange?.("Speaking...");
     this.pipelineState = "speaking";
     if (this.sttMode === "speech-recognition") this.pauseListening();
+    this.bargeInTriggered = false;
+    this.startBargeInDetection();
 
     if (audioData && audioData.byteLength > 0) {
       await this.playPreFetchedAudio(audioData);
@@ -639,7 +720,8 @@ export class NativeVoiceService {
       await this.speakText(greetingResponse);
     }
 
-    await new Promise(r => setTimeout(r, 150));
+    this.stopBargeInDetection();
+    if (!this.bargeInTriggered) await new Promise(r => setTimeout(r, 150));
     this.greetingDone = true;
     this.pipelineState = "idle";
 
@@ -664,10 +746,13 @@ export class NativeVoiceService {
     this.callbacks.onStatusChange?.("Speaking...");
     this.pipelineState = "speaking";
     if (this.sttMode === "speech-recognition") this.pauseListening();
+    this.bargeInTriggered = false;
+    this.startBargeInDetection();
 
     await this.speakText(greetingResponse);
 
-    await new Promise(r => setTimeout(r, 150));
+    this.stopBargeInDetection();
+    if (!this.bargeInTriggered) await new Promise(r => setTimeout(r, 150));
     this.greetingDone = true;
     this.pipelineState = "idle";
 
@@ -745,6 +830,11 @@ export class NativeVoiceService {
         if (responseText) {
           this.callbacks.onStatusChange?.("Speaking...");
           this.pauseListening();
+
+          // Start barge-in detection so user can interrupt playback
+          this.bargeInTriggered = false;
+          this.startBargeInDetection();
+
           try {
             if (this._isConnected) {
               if (preAudio && preAudio.byteLength > 0) {
@@ -756,8 +846,15 @@ export class NativeVoiceService {
               }
             }
           } catch { /* ignore */ }
+
+          this.stopBargeInDetection();
+
           if (!this._isConnected) return;
-          await new Promise(r => setTimeout(r, 150));
+          if (this.bargeInTriggered) {
+            dbg("Barge-in: skipping post-playback delay, resuming immediately");
+          } else {
+            await new Promise(r => setTimeout(r, 150));
+          }
           this.shouldRestart = true;
           await this.resumeListening();
         } else {
@@ -791,6 +888,8 @@ export class NativeVoiceService {
   async startStreamingPlayback(): Promise<void> {
     this.streamingAudioQueue = [];
     this.streamingPlaybackActive = true;
+    this.bargeInTriggered = false;
+    this.startBargeInDetection();
     await this.ensurePlaybackContext();
   }
 
@@ -848,6 +947,7 @@ export class NativeVoiceService {
 
   finishStreamingPlayback(): Promise<void> {
     this.streamingPlaybackActive = false;
+    this.stopBargeInDetection();
     if (this.streamingAudioQueue.length === 0) {
       return Promise.resolve();
     }
@@ -856,6 +956,11 @@ export class NativeVoiceService {
       this.streamingResolve = resolve;
       this.drainStreamingQueue();
     });
+  }
+
+  /** Returns true if playback was interrupted by user speech */
+  get wasBargeIn(): boolean {
+    return this.bargeInTriggered;
   }
 
   /**
@@ -1040,12 +1145,14 @@ export class NativeVoiceService {
         const audio = new Audio();
         audio.volume = 1.0;
         audio.preload = "auto";
+        this.currentAudioElement = audio; // Track for barge-in cancellation
 
         let settled = false;
         const finish = (success: boolean, reason?: any) => {
           if (settled) return;
           settled = true;
           clearTimeout(safetyTimeout);
+          if (this.currentAudioElement === audio) this.currentAudioElement = null;
           try { audio.pause(); audio.removeAttribute("src"); audio.load(); } catch { /* ignore */ }
           URL.revokeObjectURL(url);
           if (success) resolve(); else reject(reason);
@@ -1133,11 +1240,13 @@ export class NativeVoiceService {
       try {
         const source = this.playbackContext!.createBufferSource();
         source.buffer = audioBuffer;
+        this.currentAudioSource = source; // Track for barge-in cancellation
         // Simplified: source → gain → speakers (no compressor)
         source.connect(gainNode);
         gainNode.connect(this.playbackContext!.destination);
         source.onended = () => {
           dbg("playAudioBuffer: source.onended fired");
+          if (this.currentAudioSource === source) this.currentAudioSource = null;
           finish();
         };
         dbg("playAudioBuffer: starting playback...");
@@ -1200,6 +1309,9 @@ export class NativeVoiceService {
     this.greetingDone = false;
     this.pipelineState = "idle";
 
+    this.stopBargeInDetection();
+    this.stopSilenceDetection();
+    this.cancelAllPlayback();
     this.removeVisibilityListener();
 
     if (this.preUnlockedStream) {

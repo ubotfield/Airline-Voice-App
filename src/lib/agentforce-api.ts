@@ -71,7 +71,8 @@ export class AgentforceSession {
    * the customer's name/phone/email without needing to ask.
    */
   private enrichMessage(text: string): string {
-    if (!this.personaContext) return text;
+    // Only prepend persona context on the first message — agent session memory retains it
+    if (!this.personaContext || this.personaInjected) return text;
     return this.personaContext + text;
   }
 

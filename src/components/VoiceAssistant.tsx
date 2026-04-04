@@ -7,12 +7,18 @@ import { apiUrl } from "../lib/api-base";
 import { cn } from "../lib/utils";
 
 /**
- * VoiceAssistant V3 — inline popup bar with streaming TTS.
+ * VoiceAssistant V4 — inline popup bar with streaming TTS + speed optimizations.
  *
  * V3 optimizations:
  * - Streaming TTS: audio chunks play as they arrive (~500ms to first audio)
  * - Silence detection: recording stops when user stops speaking
  * - Web Speech API tried first even in PWA mode
+ *
+ * V4 optimizations:
+ * - Pre-warm agent session on mount (saves ~500-1500ms on first tap)
+ * - Silence threshold tightened to 500ms
+ * - Persona context sent only on first message
+ * - Barge-in: user can interrupt playback to speak
  */
 
 interface VoiceAssistantProps {
@@ -32,6 +38,28 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const hasErrorRef = useRef(false);
   const nativeRef = useRef<NativeVoiceService | null>(null);
   const agentRef = useRef<AgentforceSession | null>(null);
+  const prewarmedAgentRef = useRef<AgentforceSession | null>(null);
+
+  // ─── Pre-warm agent session on mount ──────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    const prewarm = async () => {
+      try {
+        const agent = new AgentforceSession();
+        await agent.start();
+        if (!cancelled) {
+          prewarmedAgentRef.current = agent;
+          console.log("[voice] Pre-warmed agent session ready");
+        } else {
+          agent.end();
+        }
+      } catch (err) {
+        console.warn("[voice] Pre-warm failed (will create on tap):", err);
+      }
+    };
+    prewarm();
+    return () => { cancelled = true; };
+  }, []);
 
   const toggleAssistant = async () => {
     if (isActive || hasError) {
@@ -67,9 +95,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       nativeRef.current = native;
 
       try {
-        // 1. Start Agentforce session (persona is loaded automatically)
-        const agent = new AgentforceSession();
-        await agent.start();
+        // 1. Use pre-warmed session if available, otherwise create new one
+        let agent: AgentforceSession;
+        if (prewarmedAgentRef.current?.isActive) {
+          agent = prewarmedAgentRef.current;
+          prewarmedAgentRef.current = null;
+          console.log("[voice] Using pre-warmed agent session");
+        } else {
+          agent = new AgentforceSession();
+          await agent.start();
+          console.log("[voice] Created fresh agent session (pre-warm unavailable)");
+        }
         agentRef.current = agent;
 
         // 2. Connect voice service
@@ -256,6 +292,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     return () => {
       nativeRef.current?.disconnect();
       agentRef.current?.end();
+      prewarmedAgentRef.current?.end();
     };
   }, []);
 
