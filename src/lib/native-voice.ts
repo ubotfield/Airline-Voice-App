@@ -319,18 +319,45 @@ export class NativeVoiceService {
   // Strategy A: Web Speech API (SpeechRecognition)
   // ===================================================================
 
-  private restartRecognition(): void {
+  private restartRecognition(attempt: number = 1): void {
     if (this.sttMode !== "speech-recognition") { this.startRecordingChunk(); return; }
+    const MAX_ATTEMPTS = 5;
+    const delay = attempt === 1 ? 300 : attempt <= 3 ? 500 : 1000;
+
     setTimeout(() => {
       if (!this.shouldRestart || !this._isConnected) return;
-      try { if (this.recognition) { this.recognition.start(); return; } } catch { /* ignore */ }
-      try { this.setupRecognition(); this.recognition?.start(); } catch {
-        setTimeout(() => {
-          if (!this.shouldRestart || !this._isConnected) return;
-          try { this.setupRecognition(); this.recognition?.start(); } catch { /* ignore */ }
-        }, 1000);
+
+      // First try: reuse existing recognition instance
+      try {
+        if (this.recognition) {
+          this.recognition.start();
+          dbg(`restartRecognition: started existing (attempt ${attempt})`);
+          return;
+        }
+      } catch { /* ignore */ }
+
+      // Second try: create fresh recognition instance
+      try {
+        this.setupRecognition();
+        this.recognition?.start();
+        dbg(`restartRecognition: started fresh (attempt ${attempt})`);
+        return;
+      } catch { /* ignore */ }
+
+      // Retry if we haven't exceeded max attempts
+      if (attempt < MAX_ATTEMPTS) {
+        dbg(`restartRecognition: attempt ${attempt} failed, retrying...`);
+        this.restartRecognition(attempt + 1);
+      } else {
+        dbg(`restartRecognition: all ${MAX_ATTEMPTS} attempts failed — falling back to MediaRecorder`);
+        // Last resort: fall back to MediaRecorder STT (works everywhere)
+        this.sttMode = "media-recorder";
+        this.supportedMimeType = this.getSupportedMimeType();
+        this.callbacks.onStatusChange?.("Listening...");
+        this.pipelineState = "idle";
+        this.startRecordingChunk();
       }
-    }, 300);
+    }, delay);
   }
 
   private setupRecognition(): void {
@@ -345,24 +372,33 @@ export class NativeVoiceService {
     this.recognition.maxAlternatives = 1;
 
     this.recognition.onstart = () => {
+      dbg(`recognition.onstart — shouldRestart=${this.shouldRestart} pipeline=${this.pipelineState}`);
       if (this.shouldRestart) this.callbacks.onStatusChange?.("Listening...");
     };
     this.recognition.onresult = (event: any) => {
       const last = event.results[event.results.length - 1];
       if (last.isFinal) {
         const text = last[0].transcript.trim();
-        if (text) { dbg(`User said: ${text}`); this.routeToAgent(text); }
+        if (text) {
+          dbg(`User said: "${text}" pipeline=${this.pipelineState}`);
+          // Don't route if we're already speaking (prevents echo-triggered double responses)
+          if (this.pipelineState === "speaking") {
+            dbg("Ignoring transcription — pipeline is speaking (likely echo)");
+            return;
+          }
+          this.routeToAgent(text);
+        }
       }
     };
     this.recognition.onerror = (event: any) => {
-      dbg(`recognition.onerror: ${event.error}`);
+      dbg(`recognition.onerror: ${event.error} shouldRestart=${this.shouldRestart} pipeline=${this.pipelineState}`);
       if (event.error === "no-speech" || event.error === "aborted") {
         if (this.shouldRestart && this._isConnected) this.restartRecognition();
         return;
       }
-      // audio-capture errors are transient (e.g. during TTS playback) — retry
-      if (event.error === "audio-capture") {
-        dbg("audio-capture error — will retry recognition in 500ms");
+      // audio-capture and not-allowed errors are transient — retry
+      if (event.error === "audio-capture" || event.error === "not-allowed") {
+        dbg(`${event.error} error — will retry recognition in 500ms`);
         if (this.shouldRestart && this._isConnected) {
           setTimeout(() => {
             if (this.shouldRestart && this._isConnected) this.restartRecognition();
@@ -373,6 +409,7 @@ export class NativeVoiceService {
       this.callbacks.onError?.(event.error);
     };
     this.recognition.onend = () => {
+      dbg(`recognition.onend — shouldRestart=${this.shouldRestart} pipeline=${this.pipelineState}`);
       if (this.shouldRestart && this._isConnected) this.restartRecognition();
     };
   }
@@ -704,13 +741,15 @@ export class NativeVoiceService {
 
     if (!greetingResponse) {
       this.greetingDone = true;
-      if (this.sttMode === "media-recorder") this.startRecordingChunk();
+      this.pipelineState = "idle";
+      this.shouldRestart = true;
+      await this.resumeListening();
       return;
     }
 
     this.callbacks.onStatusChange?.("Speaking...");
     this.pipelineState = "speaking";
-    if (this.sttMode === "speech-recognition") this.pauseListening();
+    this.pauseListening(); // Always pause, regardless of STT mode
     // No barge-in during greetings — speaker feedback would falsely trigger it
 
     if (audioData && audioData.byteLength > 0) {
@@ -719,17 +758,13 @@ export class NativeVoiceService {
       await this.speakText(greetingResponse);
     }
 
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 200));
     this.greetingDone = true;
     this.pipelineState = "idle";
 
-    if (this.sttMode === "speech-recognition") {
-      await this.resumeListening();
-    } else {
-      await this.refreshMicStream();
-      this.callbacks.onStatusChange?.("Listening...");
-      if (this._isConnected && this.shouldRestart) this.startRecordingChunk();
-    }
+    // Resume listening with full retry logic (handles Chrome/PWA recognition restart issues)
+    this.shouldRestart = true;
+    await this.resumeListening();
   }
 
   async sendGreeting(greetingResponse: string): Promise<void> {
@@ -737,28 +772,26 @@ export class NativeVoiceService {
 
     if (!greetingResponse) {
       this.greetingDone = true;
-      if (this.sttMode === "media-recorder") this.startRecordingChunk();
+      this.pipelineState = "idle";
+      this.shouldRestart = true;
+      await this.resumeListening();
       return;
     }
 
     this.callbacks.onStatusChange?.("Speaking...");
     this.pipelineState = "speaking";
-    if (this.sttMode === "speech-recognition") this.pauseListening();
+    this.pauseListening(); // Always pause, regardless of STT mode
     // No barge-in during greetings — speaker feedback would falsely trigger it
 
     await this.speakText(greetingResponse);
 
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 200));
     this.greetingDone = true;
     this.pipelineState = "idle";
 
-    if (this.sttMode === "speech-recognition") {
-      await this.resumeListening();
-    } else {
-      await this.refreshMicStream();
-      this.callbacks.onStatusChange?.("Listening...");
-      if (this._isConnected && this.shouldRestart) this.startRecordingChunk();
-    }
+    // Resume listening with full retry logic
+    this.shouldRestart = true;
+    await this.resumeListening();
   }
 
   private pauseListening(): void {
@@ -776,12 +809,18 @@ export class NativeVoiceService {
   private async resumeListening(): Promise<void> {
     this.shouldRestart = true;
     if (!this._isConnected) return;
+
+    // Ensure pipelineState is idle before trying to listen
+    this.pipelineState = "idle";
     this.callbacks.onStatusChange?.("Listening...");
+
     if (this.sttMode === "speech-recognition") {
+      // Refresh mic stream before restarting recognition — Chrome/Safari
+      // can lose the mic connection after audio playback, especially in PWA mode
+      try { await this.refreshMicStream(); } catch { /* ignore */ }
       this.restartRecognition();
     } else {
       try { await this.refreshMicStream(); } catch { /* ignore */ }
-      this.pipelineState = "idle";
       this.scheduleNextChunk();
     }
   }
@@ -806,6 +845,12 @@ export class NativeVoiceService {
     if (this.pipelineState === "speaking") return;
     this.pipelineState = "speaking";
     this.callbacks.onStatusChange?.("Processing...");
+
+    // CRITICAL: Pause recognition IMMEDIATELY when entering speaking state.
+    // This prevents SpeechRecognition from picking up the agent's own audio
+    // output and transcribing it as a new user message (causing double voice).
+    // Must happen BEFORE the callback which may play audio during streaming.
+    this.pauseListening();
 
     try {
       if (this.callbacks.onUserTranscription) {
@@ -832,7 +877,7 @@ export class NativeVoiceService {
             this.pipelineState = "idle";
           } else {
             this.callbacks.onStatusChange?.("Speaking...");
-            this.pauseListening();
+            // pauseListening() already called above — no need to call again
 
             // Start barge-in detection so user can interrupt playback
             this.bargeInTriggered = false;
@@ -862,12 +907,13 @@ export class NativeVoiceService {
           await this.resumeListening();
         } else {
           this.pipelineState = "idle";
-          if (this._isConnected) { this.callbacks.onStatusChange?.("Listening..."); this.scheduleNextChunk(); }
+          this.shouldRestart = true;
+          if (this._isConnected) { this.callbacks.onStatusChange?.("Listening..."); await this.resumeListening(); }
         }
       }
     } catch {
       if (!this._isConnected) return;
-      this.pauseListening();
+      // pauseListening() already called at top — no need to call again
       try { if (this._isConnected) await this.speakText("I'm sorry, I had trouble with that. Could you say it again?"); } catch { /* ignore */ }
       if (this._isConnected) {
         this.shouldRestart = true;
