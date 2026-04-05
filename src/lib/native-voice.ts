@@ -813,42 +813,49 @@ export class NativeVoiceService {
         const result = await this.callbacks.onUserTranscription(userText);
         if (!this._isConnected) return;
 
-        // Support both string response and { text, audioData } combined response
+        // Support string, { text, audioData }, and { text, audioPlayed } responses
         let responseText: string;
         let preAudio: ArrayBuffer | undefined;
+        let audioAlreadyPlayed = false;
         if (result && typeof result === "object" && "text" in result) {
           responseText = (result as any).text;
           preAudio = (result as any).audioData;
+          audioAlreadyPlayed = !!(result as any).audioPlayed;
         } else {
           responseText = result as string;
         }
 
         if (responseText) {
-          this.callbacks.onStatusChange?.("Speaking...");
-          this.pauseListening();
+          if (audioAlreadyPlayed) {
+            // V5 streaming: audio was already played during the callback — just resume listening
+            dbg("Audio already played via streaming — skipping playback, resuming listening");
+            this.pipelineState = "idle";
+          } else {
+            this.callbacks.onStatusChange?.("Speaking...");
+            this.pauseListening();
 
-          // Start barge-in detection so user can interrupt playback
-          this.bargeInTriggered = false;
-          this.startBargeInDetection();
+            // Start barge-in detection so user can interrupt playback
+            this.bargeInTriggered = false;
+            this.startBargeInDetection();
 
-          try {
-            if (this._isConnected) {
-              if (preAudio && preAudio.byteLength > 0) {
-                // Use pre-fetched audio (skips separate TTS round-trip)
-                dbg(`Playing pre-fetched audio: ${preAudio.byteLength} bytes`);
-                await this.playPreFetchedAudio(preAudio);
-              } else {
-                await this.speakText(responseText);
+            try {
+              if (this._isConnected) {
+                if (preAudio && preAudio.byteLength > 0) {
+                  dbg(`Playing pre-fetched audio: ${preAudio.byteLength} bytes`);
+                  await this.playPreFetchedAudio(preAudio);
+                } else {
+                  await this.speakText(responseText);
+                }
               }
-            }
-          } catch { /* ignore */ }
+            } catch { /* ignore */ }
 
-          this.stopBargeInDetection();
+            this.stopBargeInDetection();
+          }
 
           if (!this._isConnected) return;
-          if (this.bargeInTriggered) {
+          if (!audioAlreadyPlayed && this.bargeInTriggered) {
             dbg("Barge-in: skipping post-playback delay, resuming immediately");
-          } else {
+          } else if (!audioAlreadyPlayed) {
             await new Promise(r => setTimeout(r, 150));
           }
           this.shouldRestart = true;

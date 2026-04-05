@@ -476,12 +476,12 @@ app.post("/api/agent/message-stream", async (req, res) => {
     let sentenceBuffer = "";
     let fullText = "";
     let sentenceIndex = 0;
-    let activeTtsPromises: Promise<void>[] = [];
+    let ttsChain: Promise<void> = Promise.resolve(); // Sequential TTS chain
 
-    // Helper: fire streaming TTS for a sentence and forward audio chunks to client
+    // Helper: queue streaming TTS for a sentence (sequential — each waits for previous)
     const fireTtsForSentence = (sentence: string, sIdx: number) => {
       if (!sentence.trim() || !process.env.GEMINI_API_KEY) return;
-      const promise = (async () => {
+      ttsChain = ttsChain.then(async () => {
         try {
           const model = "gemini-2.5-flash-preview-tts";
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
@@ -529,8 +529,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
         } catch (err: any) {
           console.warn(`[msg-stream] TTS error sentence ${sIdx}:`, err.message);
         }
-      })();
-      activeTtsPromises.push(promise);
+      });
     };
 
     // Parse Agentforce SSE events
@@ -595,8 +594,8 @@ app.post("/api/agent/message-stream", async (req, res) => {
       }
     }
 
-    // Wait for all TTS to finish
-    await Promise.all(activeTtsPromises);
+    // Wait for all sequential TTS to finish
+    await ttsChain;
 
     const totalMs = Date.now() - totalStart;
     console.log(`[msg-stream] Complete: ${totalMs}ms, ${sentenceIndex} sentences, text="${fullText.substring(0, 80)}..."`);

@@ -289,9 +289,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 });
               }
 
-              // If streaming worked, audio already played — return text only
+              // If streaming worked, audio already played — signal skip playback
               if (streamingWorked) {
-                return { text: response, audioData: undefined } as any;
+                return { text: response, audioPlayed: true } as any;
               }
               // Otherwise return with full audio for native-voice to play
               return { text: response, audioData: fullAudioData } as any;
