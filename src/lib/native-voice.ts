@@ -643,6 +643,7 @@ export class NativeVoiceService {
 
     // Stop streaming playback
     this.streamingPlaybackActive = false;
+    this.streamingDraining = false;
     this.streamingAudioQueue = [];
     if (this.streamingResolve) {
       this.streamingResolve();
@@ -933,10 +934,12 @@ export class NativeVoiceService {
   private streamingAudioQueue: ArrayBuffer[] = [];
   private streamingPlaybackActive = false;
   private streamingResolve: (() => void) | null = null;
+  private streamingDraining = false; // True while drainStreamingQueue is actively playing audio
 
   async startStreamingPlayback(): Promise<void> {
     this.streamingAudioQueue = [];
     this.streamingPlaybackActive = true;
+    this.streamingDraining = false;
     this.bargeInTriggered = false;
     this.startBargeInDetection();
     await this.ensurePlaybackContext();
@@ -950,18 +953,24 @@ export class NativeVoiceService {
     this.streamingAudioQueue.push(bytes.buffer);
 
     // Start playback if not already playing
-    if (this.streamingPlaybackActive && this.streamingAudioQueue.length === 1) {
+    if (this.streamingPlaybackActive && !this.streamingDraining) {
       this.drainStreamingQueue();
     }
   }
 
   private async drainStreamingQueue(): Promise<void> {
-    if (!this.playbackContext || this.playbackContext.state === "closed") return;
+    if (this.streamingDraining) return; // Already draining — new chunks will be picked up by the while loop
+    this.streamingDraining = true;
+
+    if (!this.playbackContext || this.playbackContext.state === "closed") {
+      this.streamingDraining = false;
+      return;
+    }
     if (this.playbackContext.state === "suspended") {
       await this.playbackContext.resume();
     }
 
-    while (this.streamingAudioQueue.length > 0 && this.streamingPlaybackActive) {
+    while (this.streamingAudioQueue.length > 0 && (this.streamingPlaybackActive || this.streamingResolve)) {
       const pcmData = this.streamingAudioQueue.shift()!;
       try {
         // Convert raw PCM to AudioBuffer (24kHz, 16-bit, mono)
@@ -987,9 +996,11 @@ export class NativeVoiceService {
       }
     }
 
-    // If done and no more chunks coming, resolve the streaming promise
-    if (!this.streamingPlaybackActive && this.streamingAudioQueue.length === 0) {
-      this.streamingResolve?.();
+    this.streamingDraining = false;
+
+    // If finishStreamingPlayback was called and we've drained everything, resolve
+    if (!this.streamingPlaybackActive && this.streamingAudioQueue.length === 0 && this.streamingResolve) {
+      this.streamingResolve();
       this.streamingResolve = null;
     }
   }
@@ -997,13 +1008,24 @@ export class NativeVoiceService {
   finishStreamingPlayback(): Promise<void> {
     this.streamingPlaybackActive = false;
     this.stopBargeInDetection();
-    if (this.streamingAudioQueue.length === 0) {
-      return Promise.resolve();
+
+    // If nothing is playing and queue is empty, we're done
+    if (!this.streamingDraining && this.streamingAudioQueue.length === 0) {
+      // Add a small delay to let the last audio buffer finish playing through speakers
+      // before recognition resumes (prevents speaker echo triggering recognition)
+      return new Promise(r => setTimeout(r, 300));
     }
-    // Wait for remaining queue to drain
+
+    // Wait for the drain loop to finish playing all remaining chunks
     return new Promise<void>((resolve) => {
-      this.streamingResolve = resolve;
-      this.drainStreamingQueue();
+      this.streamingResolve = () => {
+        // Small delay after last chunk finishes to avoid speaker echo
+        setTimeout(resolve, 300);
+      };
+      // If drain loop isn't running but there are queued chunks, kick it off
+      if (!this.streamingDraining && this.streamingAudioQueue.length > 0) {
+        this.drainStreamingQueue();
+      }
     });
   }
 

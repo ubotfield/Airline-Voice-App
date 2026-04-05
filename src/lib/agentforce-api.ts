@@ -3,7 +3,8 @@ import { apiUrl } from "./api-base";
 export class AgentforceSession {
   private sessionId: string | null = null;
   private sequenceId: number = 0;
-  private personaInjected: boolean = false;
+  private variablesSent: boolean = false;
+  private contextPrepended: boolean = false;
   private personaContext: string = "";
   private personaVarsCache: Array<{ name: string; type: string; value: string }> = [];
 
@@ -20,7 +21,8 @@ export class AgentforceSession {
     const data = await res.json();
     this.sessionId = data.sessionId;
     this.sequenceId = 0;
-    this.personaInjected = false;
+    this.variablesSent = false;
+    this.contextPrepended = false;
     this.personaContext = "";
     this.personaVarsCache = [];
 
@@ -61,18 +63,19 @@ export class AgentforceSession {
    * Returns Agentforce-compatible context variables (only on first call).
    */
   private getPersonaVariables(): Array<{ name: string; type: string; value: string }> {
-    if (this.personaInjected) return [];
-    this.personaInjected = true;
+    if (this.variablesSent) return [];
+    this.variablesSent = true;
     return this.personaVarsCache;
   }
 
   /**
    * Prepends persona context to the message so the agent always knows
    * the customer's name/phone/email without needing to ask.
+   * Uses its own flag (separate from variables) so both mechanisms work.
    */
   private enrichMessage(text: string): string {
-    // Only prepend persona context on the first message — agent session memory retains it
-    if (!this.personaContext || this.personaInjected) return text;
+    if (!this.personaContext || this.contextPrepended) return text;
+    this.contextPrepended = true;
     return this.personaContext + text;
   }
 
