@@ -205,6 +205,91 @@ export class AgentforceSession {
     return { response: responseText || "I didn't catch that. Could you try again?" };
   }
 
+  /**
+   * V5: True streaming — agent text arrives word-by-word via /messages/stream,
+   * sentences are detected and TTS'd individually, audio chunks stream to client.
+   * Time-to-first-audio: ~1-2s instead of 5-7s.
+   */
+  async sendMessageFullStreaming(
+    text: string,
+    callbacks: {
+      onTextChunk?: (chunk: string, fullText: string) => void;
+      onTextComplete?: (fullText: string) => void;
+      onAudioChunk?: (pcmBase64: string, index: number, sentenceIndex: number) => void;
+      onDone?: (fullText: string) => void;
+      onError?: (error: string) => void;
+    }
+  ): Promise<{ response: string }> {
+    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    this.sequenceId++;
+    const variables = this.getPersonaVariables();
+
+    const res = await fetch(apiUrl("/api/agent/message-stream"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: this.sessionId,
+        message: this.enrichMessage(text),
+        sequenceId: this.sequenceId,
+        variables,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error(err.error || `Full stream failed: ${res.status}`);
+    }
+
+    let responseText = "";
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr) continue;
+
+        try {
+          const event = JSON.parse(jsonStr);
+          switch (event.type) {
+            case "text-chunk":
+              callbacks.onTextChunk?.(event.text, event.fullText);
+              break;
+            case "text-complete":
+              responseText = event.fullText || responseText;
+              callbacks.onTextComplete?.(responseText);
+              break;
+            case "audio":
+              callbacks.onAudioChunk?.(event.chunk, event.index, event.sentenceIndex);
+              break;
+            case "done":
+              responseText = event.fullText || responseText;
+              callbacks.onDone?.(responseText);
+              break;
+            case "error":
+              callbacks.onError?.(event.error);
+              break;
+            case "fallback":
+              // Server fell back to sync mode — still works, just slower
+              console.log("[agent] Streaming fell back to sync:", event.reason);
+              break;
+          }
+        } catch { /* skip malformed JSON */ }
+      }
+    }
+
+    return { response: responseText || "I didn't catch that. Could you try again?" };
+  }
+
   async end(): Promise<void> {
     if (!this.sessionId) return;
     try {

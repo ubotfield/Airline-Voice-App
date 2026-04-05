@@ -415,6 +415,288 @@ app.post("/api/agent/speak-stream", async (req, res) => {
   }
 });
 
+// ─── V5: True Streaming Agent + Sentence-by-Sentence TTS ─────────────────
+// Uses /messages/stream (real SSE from Agentforce) instead of ?sync=true.
+// Text chunks arrive word-by-word; we buffer into sentences and fire TTS
+// for each sentence as soon as it's complete. Audio plays while agent is
+// still generating the rest of the response.
+app.post("/api/agent/message-stream", async (req, res) => {
+  const { sessionId, message, sequenceId, variables } = req.body;
+  if (!sessionId || !message || !sequenceId) {
+    return res.status(400).json({ error: "sessionId, message, and sequenceId are required" });
+  }
+
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  try {
+    const totalStart = Date.now();
+    console.log(`[msg-stream] Starting streaming for session ${sessionId}`);
+
+    // POST to /messages/stream — the real Agentforce SSE endpoint
+    const { accessToken } = await getAccessToken();
+    const sfRes = await fetch(
+      `${AGENT_API_BASE}/einstein/ai-agent/v1/sessions/${sessionId}/messages/stream`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          message: { sequenceId, type: "Text", text: message },
+          variables: variables || [],
+        }),
+      }
+    );
+
+    if (!sfRes.ok) {
+      const err = await sfRes.text();
+      console.error("[msg-stream] Agent stream failed:", sfRes.status, err);
+      // Fall back to sync mode
+      res.write(`data: ${JSON.stringify({ type: "fallback", reason: `Agent stream ${sfRes.status}` })}\n\n`);
+      return await handleSyncFallback(res, sessionId, message, sequenceId, variables, totalStart);
+    }
+
+    if (!sfRes.body) {
+      console.warn("[msg-stream] No response body — falling back to sync");
+      res.write(`data: ${JSON.stringify({ type: "fallback", reason: "No stream body" })}\n\n`);
+      return await handleSyncFallback(res, sessionId, message, sequenceId, variables, totalStart);
+    }
+
+    // Read the SSE stream from Agentforce
+    const reader = sfRes.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    let sentenceBuffer = "";
+    let fullText = "";
+    let sentenceIndex = 0;
+    let activeTtsPromises: Promise<void>[] = [];
+
+    // Helper: fire streaming TTS for a sentence and forward audio chunks to client
+    const fireTtsForSentence = (sentence: string, sIdx: number) => {
+      if (!sentence.trim() || !process.env.GEMINI_API_KEY) return;
+      const promise = (async () => {
+        try {
+          const model = "gemini-2.5-flash-preview-tts";
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+          const ttsRes = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: sentence }] }],
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
+              },
+            }),
+          });
+
+          if (ttsRes.ok && ttsRes.body) {
+            const ttsReader = ttsRes.body.getReader();
+            const ttsDecoder = new TextDecoder();
+            let ttsBuf = "";
+            let chunkIdx = 0;
+            while (true) {
+              const { done, value } = await ttsReader.read();
+              if (done) break;
+              ttsBuf += ttsDecoder.decode(value, { stream: true });
+              const ttsLines = ttsBuf.split("\n");
+              ttsBuf = ttsLines.pop() || "";
+              for (const ttsLine of ttsLines) {
+                if (!ttsLine.startsWith("data: ")) continue;
+                const jsonStr = ttsLine.slice(6).trim();
+                if (!jsonStr || jsonStr === "[DONE]") continue;
+                try {
+                  const chunk = JSON.parse(jsonStr);
+                  const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                  if (audioB64) {
+                    chunkIdx++;
+                    res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: sIdx })}\n\n`);
+                  }
+                } catch { /* skip */ }
+              }
+            }
+            console.log(`[msg-stream] TTS sentence ${sIdx}: ${chunkIdx} audio chunks`);
+          } else {
+            console.warn(`[msg-stream] TTS failed for sentence ${sIdx}: ${ttsRes.status}`);
+          }
+        } catch (err: any) {
+          console.warn(`[msg-stream] TTS error sentence ${sIdx}:`, err.message);
+        }
+      })();
+      activeTtsPromises.push(promise);
+    };
+
+    // Parse Agentforce SSE events
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim() || line.startsWith(":")) continue;
+
+        // Handle "event: TEXT_CHUNK" — the event type line
+        if (line.startsWith("event:")) continue; // We parse from the data line
+
+        if (line.startsWith("data: ")) {
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const msgType = parsed.message?.type;
+
+            if (msgType === "TextChunk") {
+              const chunkText = parsed.message?.message || "";
+              fullText += chunkText;
+              sentenceBuffer += chunkText;
+
+              // Forward text chunk to client for UI updates
+              res.write(`data: ${JSON.stringify({ type: "text-chunk", text: chunkText, fullText })}\n\n`);
+
+              // Check for complete sentence
+              const sentenceMatch = sentenceBuffer.match(/^(.*?[.!?\n])\s*/s);
+              if (sentenceMatch) {
+                const completeSentence = sentenceMatch[1].trim();
+                sentenceBuffer = sentenceBuffer.slice(sentenceMatch[0].length);
+                if (completeSentence.length > 0) {
+                  console.log(`[msg-stream] Sentence ${sentenceIndex}: "${completeSentence.substring(0, 60)}..."`);
+                  // Fire TTS for this sentence — runs concurrently
+                  fireTtsForSentence(completeSentence, sentenceIndex);
+                  sentenceIndex++;
+                }
+              }
+            } else if (msgType === "Inform") {
+              // Full text confirmation — may contain the complete response
+              const informText = parsed.message?.message || "";
+              if (informText && !fullText) fullText = informText;
+              res.write(`data: ${JSON.stringify({ type: "text-complete", fullText: fullText || informText })}\n\n`);
+            } else if (msgType === "EndOfTurn") {
+              // Flush remaining sentence buffer
+              if (sentenceBuffer.trim().length > 0) {
+                console.log(`[msg-stream] Final sentence ${sentenceIndex}: "${sentenceBuffer.trim().substring(0, 60)}..."`);
+                fireTtsForSentence(sentenceBuffer.trim(), sentenceIndex);
+                sentenceIndex++;
+                sentenceBuffer = "";
+              }
+            }
+          } catch { /* skip malformed JSON */ }
+        }
+      }
+    }
+
+    // Wait for all TTS to finish
+    await Promise.all(activeTtsPromises);
+
+    const totalMs = Date.now() - totalStart;
+    console.log(`[msg-stream] Complete: ${totalMs}ms, ${sentenceIndex} sentences, text="${fullText.substring(0, 80)}..."`);
+    res.write(`data: ${JSON.stringify({ type: "done", fullText, totalMs, sentences: sentenceIndex })}\n\n`);
+    return res.end();
+  } catch (err: any) {
+    console.error("[msg-stream] Error:", err.message);
+    try {
+      res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+    } catch { /* ignore */ }
+    return res.end();
+  }
+});
+
+// Sync fallback for when streaming agent API fails
+async function handleSyncFallback(
+  res: any, sessionId: string, message: string, sequenceId: number,
+  variables: any, totalStart: number
+) {
+  try {
+    const sfRes = await sfFetch(
+      `/einstein/ai-agent/v1/sessions/${sessionId}/messages?sync=true`,
+      {
+        method: "POST",
+        useApiUrl: true,
+        body: JSON.stringify({
+          message: { sequenceId, type: "Text", text: message },
+          variables: variables || [],
+        }),
+      }
+    );
+
+    if (!sfRes.ok) {
+      res.write(`data: ${JSON.stringify({ type: "error", error: "Agent sync also failed" })}\n\n`);
+      return res.end();
+    }
+
+    const data = await sfRes.json();
+    let responseText = "";
+    if (data.messages && Array.isArray(data.messages)) {
+      responseText = data.messages
+        .filter((m: any) => m.type === "Text" || m.type === "Inform")
+        .map((m: any) => m.message || m.text || "")
+        .join("\n")
+        .trim();
+    }
+    if (!responseText && data.text) responseText = data.text;
+
+    res.write(`data: ${JSON.stringify({ type: "text-complete", fullText: responseText })}\n\n`);
+
+    // TTS the full response
+    if (responseText && process.env.GEMINI_API_KEY) {
+      const model = "gemini-2.5-flash-preview-tts";
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+      const ttsRes = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: responseText }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
+          },
+        }),
+      });
+
+      if (ttsRes.ok && ttsRes.body) {
+        const ttsReader = ttsRes.body.getReader();
+        const ttsDecoder = new TextDecoder();
+        let ttsBuf = "";
+        let chunkIdx = 0;
+        while (true) {
+          const { done, value } = await ttsReader.read();
+          if (done) break;
+          ttsBuf += ttsDecoder.decode(value, { stream: true });
+          const ttsLines = ttsBuf.split("\n");
+          ttsBuf = ttsLines.pop() || "";
+          for (const ttsLine of ttsLines) {
+            if (!ttsLine.startsWith("data: ")) continue;
+            try {
+              const chunk = JSON.parse(ttsLine.slice(6).trim());
+              const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+              if (audioB64) {
+                chunkIdx++;
+                res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: 0 })}\n\n`);
+              }
+            } catch { /* skip */ }
+          }
+        }
+      }
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "done", fullText: responseText, totalMs: Date.now() - totalStart, sentences: 1 })}\n\n`);
+    return res.end();
+  } catch (err: any) {
+    res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+    return res.end();
+  }
+}
+
 // CRITICAL: Agent API DELETE must NOT have a body or Content-Type header
 app.delete("/api/agent/session/:sessionId", async (req, res) => {
   const { sessionId } = req.params;

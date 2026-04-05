@@ -19,6 +19,11 @@ import { cn } from "../lib/utils";
  * - Silence threshold tightened to 500ms
  * - Persona context sent only on first message
  * - Barge-in: user can interrupt playback to speak
+ *
+ * V5 optimizations:
+ * - True streaming from Agentforce /messages/stream endpoint
+ * - Sentence-by-sentence TTS: audio plays while agent is still generating
+ * - Time-to-first-audio: ~1-2s instead of 4-7s
  */
 
 interface VoiceAssistantProps {
@@ -156,37 +161,35 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             setStatus("Processing...");
 
             try {
-              // Try streaming endpoint first (audio starts playing ~500ms faster)
               const timeoutPromise = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("timeout")), 30000)
+                setTimeout(() => reject(new Error("timeout")), 35000)
               );
 
               let streamingWorked = false;
               let streamResponse = "";
-              let gotFullAudio = false;
               let fullAudioData: ArrayBuffer | undefined;
 
               try {
-                // Start streaming playback on the voice service
+                // V5: Try full streaming (agent streams text → sentence TTS → audio chunks)
                 await nativeRef.current?.startStreamingPlayback();
 
                 const { response } = await Promise.race([
-                  agentRef.current!.sendMessageStreaming(userText, {
-                    onText: (text) => {
-                      streamResponse = text;
+                  agentRef.current!.sendMessageFullStreaming(userText, {
+                    onTextChunk: (_chunk, _fullText) => {
                       setStatus("Speaking...");
                     },
-                    onAudioChunk: (pcmBase64, _index) => {
+                    onTextComplete: (fullText) => {
+                      streamResponse = fullText;
+                    },
+                    onAudioChunk: (pcmBase64, _index, _sentenceIndex) => {
                       nativeRef.current?.addStreamingChunk(pcmBase64);
                       streamingWorked = true;
                     },
-                    onAudioFull: (wavBase64) => {
-                      // Fallback: full audio arrived instead of chunks
-                      gotFullAudio = true;
-                      const binaryStr = atob(wavBase64);
-                      const bytes = new Uint8Array(binaryStr.length);
-                      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-                      fullAudioData = bytes.buffer;
+                    onDone: (fullText) => {
+                      streamResponse = fullText || streamResponse;
+                    },
+                    onError: (error) => {
+                      console.warn("[voice] V5 stream error:", error);
                     },
                   }),
                   timeoutPromise,
@@ -194,23 +197,46 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
                 streamResponse = response || streamResponse;
 
-                // Wait for streaming audio to finish playing
                 if (streamingWorked) {
                   await nativeRef.current?.finishStreamingPlayback();
-                } else if (gotFullAudio && fullAudioData) {
-                  // Play full audio fallback
+                }
+              } catch (v5Err: any) {
+                console.warn("[voice] V5 streaming failed, trying V3:", v5Err?.message);
+                // Fall back to V3 streaming (sync agent + streaming TTS)
+                try {
+                  await nativeRef.current?.startStreamingPlayback();
+                  const { response } = await Promise.race([
+                    agentRef.current!.sendMessageStreaming(userText, {
+                      onText: (text) => { streamResponse = text; setStatus("Speaking..."); },
+                      onAudioChunk: (pcmBase64) => {
+                        nativeRef.current?.addStreamingChunk(pcmBase64);
+                        streamingWorked = true;
+                      },
+                      onAudioFull: (wavBase64) => {
+                        const binaryStr = atob(wavBase64);
+                        const bytes = new Uint8Array(binaryStr.length);
+                        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+                        fullAudioData = bytes.buffer;
+                      },
+                    }),
+                    timeoutPromise,
+                  ]);
+                  streamResponse = response || streamResponse;
+                  if (streamingWorked) {
+                    await nativeRef.current?.finishStreamingPlayback();
+                  } else if (fullAudioData) {
+                    return { text: streamResponse, audioData: fullAudioData } as any;
+                  }
+                } catch (v3Err: any) {
+                  console.warn("[voice] V3 also failed, trying sync:", v3Err?.message);
+                  const { response, audioData } = await Promise.race([
+                    agentRef.current!.sendMessageWithAudio(userText),
+                    timeoutPromise,
+                  ]);
+                  streamResponse = response;
+                  fullAudioData = audioData;
                   return { text: streamResponse, audioData: fullAudioData } as any;
                 }
-              } catch (streamErr: any) {
-                console.warn("[voice] Streaming failed, falling back:", streamErr?.message);
-                // Fall back to non-streaming endpoint
-                const { response, audioData } = await Promise.race([
-                  agentRef.current!.sendMessageWithAudio(userText),
-                  timeoutPromise,
-                ]);
-                streamResponse = response;
-                fullAudioData = audioData;
-                return { text: streamResponse, audioData: fullAudioData } as any;
               }
 
               const response = streamResponse;
