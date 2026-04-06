@@ -67,7 +67,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   }, []);
 
   const toggleAssistant = async () => {
-    if (isActive || hasError) {
+    if (isActive || hasError || isConnecting) {
       // ─── Stop ─────────────────────────────────────────────
       const native = nativeRef.current;
       const agent = agentRef.current;

@@ -198,9 +198,13 @@ export class NativeVoiceService {
 
     const isPWA = isStandalonePWA();
 
-    // V3: Try Web Speech API first EVEN in PWA mode — it's instant (no server round-trip).
-    // Falls back to MediaRecorder only if Web Speech API is not available.
-    if (SpeechRecognition) {
+    // PWA standalone mode: webkitSpeechRecognition exists but is unreliable
+    // (silently fails, hangs, or throws not-allowed). Use MediaRecorder directly.
+    // Regular browser: Web Speech API is instant and reliable — use it first.
+    if (isPWA) {
+      this.sttMode = "media-recorder";
+      dbg("PWA mode detected — using MediaRecorder STT (Speech API unreliable in standalone)");
+    } else if (SpeechRecognition) {
       this.sttMode = "speech-recognition";
     } else {
       this.sttMode = "media-recorder";

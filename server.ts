@@ -481,6 +481,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
     // Helper: queue streaming TTS for a sentence (sequential — each waits for previous)
     const fireTtsForSentence = (sentence: string, sIdx: number) => {
       if (!sentence.trim() || !process.env.GEMINI_API_KEY) return;
+      const normalizedSentence = normalizeTtsText(sentence);
       ttsChain = ttsChain.then(async () => {
         try {
           const model = "gemini-2.5-flash-preview-tts";
@@ -489,7 +490,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              contents: [{ parts: [{ text: sentence }] }],
+              contents: [{ parts: [{ text: normalizedSentence }] }],
               generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
@@ -850,6 +851,7 @@ function createWavHeader(pcmByteLength: number): Buffer {
  * Returns a Buffer containing a complete WAV file.
  */
 function synthesizeViaTTSGateway(text: string, voice: string, wsUrl: string): Promise<Buffer> {
+  text = normalizeTtsText(text);
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl, {
       headers: {
@@ -968,10 +970,32 @@ function closeGatewayCircuit(): void {
 }
 
 /**
+ * Normalize text for natural TTS speech.
+ * Converts dollar amounts, order numbers, and other patterns to spoken form.
+ */
+function normalizeTtsText(text: string): string {
+  // Convert dollar amounts: $12.02 → "12 dollars and 2 cents", $5.00 → "5 dollars"
+  text = text.replace(/\$(\d+)\.(\d{2})/g, (_match, dollars, cents) => {
+    const d = parseInt(dollars, 10);
+    const c = parseInt(cents, 10);
+    if (c === 0) return `${d} dollars`;
+    return `${d} dollars and ${c} cents`;
+  });
+  // Convert whole dollar amounts: $5 → "5 dollars"
+  text = text.replace(/\$(\d+)(?!\.\d)/g, (_match, dollars) => {
+    return `${parseInt(dollars, 10)} dollars`;
+  });
+  // Convert order numbers with dashes for cleaner reading: Order-12345 → "Order 12345"
+  text = text.replace(/Order-(\d+)/gi, "Order $1");
+  return text;
+}
+
+/**
  * Direct Gemini TTS via public REST API (fallback when LLM Gateway is unreachable).
  * Returns a Buffer containing a complete WAV file.
  */
 async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buffer> {
+  text = normalizeTtsText(text);
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) throw new Error("No GEMINI_API_KEY configured");
 
