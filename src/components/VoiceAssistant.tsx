@@ -377,7 +377,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 {status}
               </p>
               <p className="text-[10px] text-on-surface/50 font-bold uppercase tracking-tight leading-tight mt-0.5">
-                {hasError ? "Tap to reset" : "Say your order"}
+                {hasError ? "Tap to reset" : "Ask Sky anything"}
               </p>
             </div>
 

@@ -1,45 +1,52 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,500;1,600;1,700;1,800&family=Be+Vietnam+Pro:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap');
 
 @theme {
-  --font-headline: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-body: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
 
-  --color-primary: #b80e1e;
-  --color-primary-dim: #a40017;
-  --color-on-primary: #ffefed;
-  --color-primary-container: #ff766f;
-  
-  --color-surface: #fff4f3;
-  --color-on-surface: #342d2d;
-  
+  --color-primary: #001e40;
+  --color-primary-dim: #003366;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #003366;
+  --color-on-primary-container: #799dd6;
+
+  --color-surface: #f9f9ff;
+  --color-on-surface: #001b3c;
+
   --color-surface-container-lowest: #ffffff;
-  --color-surface-container-low: #fffaf9;
-  --color-surface-container: #fff4f3;
-  --color-surface-container-high: #fceceb;
-  --color-surface-container-highest: #f7e2e0;
+  --color-surface-container-low: #f0f3ff;
+  --color-surface-container: #e7eeff;
+  --color-surface-container-high: #dee8ff;
+  --color-surface-container-highest: #d5e3ff;
 
-  --color-secondary-container: #ffc791;
-  --color-on-secondary-container: #4a2800;
-  
-  --color-tertiary: #BECE5A;
-  --color-tertiary-dim: #d8e971;
+  --color-secondary: #E01933;
+  --color-secondary-container: #e41d35;
+  --color-on-secondary: #ffffff;
+  --color-on-secondary-container: #fffbff;
 
-  --radius-xl: 3rem;
+  --color-tertiary: #c8dbff;
+  --color-tertiary-dim: #a7c8ff;
+
+  --color-on-surface-variant: #43474f;
+  --color-outline: #737780;
+  --color-outline-variant: #c3c6d1;
+
+  --radius-xl: 2rem;
 }
 
 @layer base {
   body {
     @apply bg-surface text-on-surface font-body;
   }
-  
+
   h1, h2, h3, h4, h5, h6 {
     @apply font-headline;
   }
 }
 
 .glass-panel {
-  background: rgba(255, 244, 243, 0.8);
+  background: rgba(249, 249, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
@@ -58,7 +65,7 @@
   position: absolute;
   inset: -10px;
   border-radius: 9999px;
-  background: var(--color-tertiary-dim);
+  background: var(--color-secondary);
   opacity: 0.3;
   animation: pulse-ring 2s infinite;
 }

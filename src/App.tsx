@@ -1,30 +1,20 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Home as HomeIcon, UtensilsCrossed, ReceiptText, User, Menu as MenuIcon } from 'lucide-react';
+import { Home as HomeIcon, Plane, Mic, Star, MoreHorizontal } from 'lucide-react';
 import { Home } from './components/Home';
-import { Menu } from './components/Menu';
-import { Orders } from './components/Orders';
 import { Profile } from './components/Profile';
 import { VoiceAssistant } from './components/VoiceAssistant';
-import { OrderConfirmationModal } from './components/OrderConfirmationModal';
 
-type Tab = 'home' | 'menu' | 'orders' | 'profile';
-
-export interface OrderConfirmation {
-  orderNumber: string;
-  timestamp: Date;
-}
+type Tab = 'home' | 'trips' | 'skymiles' | 'profile';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
-  const [lastOrder, setLastOrder] = useState<OrderConfirmation | null>(null);
-  const [showOrderModal, setShowOrderModal] = useState(false);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'home': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
-      case 'menu': return <Menu />;
-      case 'orders': return <Orders lastOrder={lastOrder} />;
+      case 'trips': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
+      case 'skymiles': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
       case 'profile': return <Profile />;
     }
   };
@@ -32,24 +22,31 @@ export default function App() {
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       {/* Top App Bar */}
-      <header className="bg-surface flex justify-between items-center w-full px-6 py-4 fixed top-0 z-50" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
-        <div className="flex items-center gap-4">
-          <button className="text-primary hover:opacity-80 transition-opacity">
-            <MenuIcon size={24} />
-          </button>
-          <h1 className="font-headline font-bold text-2xl tracking-tight text-primary italic">Scott's Kitchen</h1>
+      <header className="bg-surface/90 backdrop-blur-md flex justify-between items-center w-full px-6 py-4 fixed top-0 z-50 border-b border-outline-variant/20" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
+        <div className="flex items-center gap-3">
+          <div className="text-secondary">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2L2 22h20L12 2z" />
+            </svg>
+          </div>
+          <h1 className="font-headline font-extrabold text-xl tracking-tighter text-primary uppercase">Fly Delta</h1>
         </div>
-        <div className="w-10 h-10 rounded-full bg-surface-container-high overflow-hidden border-2 border-primary">
-          <img
-            alt="User"
-            className="w-full h-full object-cover"
-            src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=100"
-          />
+        <div className="flex items-center gap-3">
+          <button className="text-on-surface-variant hover:text-primary transition-colors p-2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </button>
+          <div className="w-9 h-9 rounded-full bg-primary-container overflow-hidden border-2 border-primary-dim">
+            <img
+              alt="Marcus Johnson"
+              className="w-full h-full object-cover"
+              src="https://lh3.googleusercontent.com/aida-public/AB6AXuA-VbsUrhdq7dOm4YgojIxNGQhUdD90xpSAkzNfirKNHEmH1TPGA2qG3fye-kdk5vR7Ko7IJtIyWul36fwFQ5L6iZk1ox0y95FYxQtFhzHzbgeGyBa0fLNIQYpbZRov6V-dIZDGb_JJtSY667YwRGu9BIJjcIxFAsenX12fjcIGh8kK6MXw2a_RQ3AfAcjN_9LqVkeoE-kdUPIaEarYQK49MCB596qu5vhfKLpsrN2c58kfh3hpZ5WVGAE3HPJ3hH-xCVmw9oTyap0a"
+            />
+          </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="flex-grow pt-28 pb-32 px-6 max-w-5xl mx-auto w-full">
+      <main className="flex-grow pt-24 pb-32 px-6 max-w-5xl mx-auto w-full">
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -64,36 +61,34 @@ export default function App() {
       </main>
 
       {/* Voice Assistant — self-contained: mic button + inline popup bar */}
-      <VoiceAssistant onOrderPlaced={(order) => { setLastOrder(order); setShowOrderModal(true); }} />
-
-      {/* Order Confirmation Modal */}
-      {showOrderModal && lastOrder && (
-        <OrderConfirmationModal
-          order={lastOrder}
-          onClose={() => setShowOrderModal(false)}
-          onViewOrders={() => { setShowOrderModal(false); setActiveTab('orders'); }}
-        />
-      )}
+      <VoiceAssistant />
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-8 pt-4 bg-surface rounded-t-xl shadow-[0_-4px_24px_rgba(44,37,37,0.08)]">
+      <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pb-8 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl border-t border-outline-variant/20 shadow-[0_-4px_20px_rgba(0,27,60,0.08)]">
         {[
           { id: 'home', icon: HomeIcon, label: 'Home' },
-          { id: 'menu', icon: UtensilsCrossed, label: 'Menu' },
-          { id: 'orders', icon: ReceiptText, label: 'Orders' },
-          { id: 'profile', icon: User, label: 'Profile' },
+          { id: 'trips', icon: Plane, label: 'My Trips' },
+          { id: 'assistant', icon: Mic, label: 'Assistant', isSpecial: true },
+          { id: 'skymiles', icon: Star, label: 'SkyMiles' },
+          { id: 'profile', icon: MoreHorizontal, label: 'More' },
         ].map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id as Tab)}
-            className={`flex flex-col items-center justify-center px-5 py-2 rounded-full transition-all duration-300 ${
-              activeTab === tab.id
-                ? 'bg-primary text-on-primary scale-110'
-                : 'text-on-surface opacity-60 hover:bg-on-surface/5'
+            onClick={() => {
+              if (tab.id !== 'assistant') {
+                setActiveTab(tab.id as Tab);
+              }
+            }}
+            className={`flex flex-col items-center justify-center px-3 py-1 transition-all duration-300 ${
+              tab.isSpecial
+                ? 'text-secondary scale-110 font-bold'
+                : activeTab === tab.id
+                  ? 'text-primary-dim'
+                  : 'text-on-surface-variant hover:text-primary-dim'
             }`}
           >
-            <tab.icon size={24} fill={activeTab === tab.id ? "currentColor" : "none"} />
-            <span className="font-headline font-bold text-[10px] uppercase tracking-widest mt-1">
+            <tab.icon size={tab.isSpecial ? 28 : 22} fill={tab.isSpecial ? "currentColor" : activeTab === tab.id ? "currentColor" : "none"} />
+            <span className="font-body font-medium text-[10px] tracking-wide mt-1">
               {tab.label}
             </span>
           </button>

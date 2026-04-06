@@ -1138,9 +1138,9 @@ app.post("/api/tts", async (req, res) => {
 // For the demo, we store persona data in-memory with env var defaults.
 
 let demoPersona = {
-  customerName: process.env.DEMO_CUSTOMER_NAME || "Scott",
+  customerName: process.env.DEMO_CUSTOMER_NAME || "Marcus Johnson",
   customerPhone: process.env.DEMO_CUSTOMER_PHONE || "555-0100",
-  customerEmail: process.env.DEMO_CUSTOMER_EMAIL || "scott@freshkitchens.com",
+  customerEmail: process.env.DEMO_CUSTOMER_EMAIL || "marcus.johnson@example.com",
 };
 
 app.get("/api/demo-persona", async (_req, res) => {
@@ -1245,7 +1245,7 @@ app.post("/api/send-receipt", async (req, res) => {
 
 app.get("/api/tts-test", async (_req, res) => {
   try {
-    const wavBuffer = await synthesizeViaGeminiAPI("Welcome to Scott's Fresh Kitchens. How can I help you today?", "Kore");
+    const wavBuffer = await synthesizeViaGeminiAPI("Welcome to Fly Delta. How can I help you today?", "Kore");
     res.json({ ok: true, bytes: wavBuffer.length });
   } catch (err: any) {
     res.json({ ok: false, error: err.message });
@@ -1278,31 +1278,10 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-// ─── Static menu fallback ────────────────────────────────────────
+// ─── Static menu fallback (unused for airline, kept for compatibility) ────
 
 function getStaticMenu() {
-  return [
-    { id: "s-1", name: "Classic Fresh Burger", price: 12.99, description: "Our signature quarter-pound beef patty with fresh lettuce, tomato, pickles, and our house-made sauce on a toasted brioche bun.", category: "Burgers", calories: 650, isPopular: true, available: true },
-    { id: "s-2", name: "Crispy Chicken Sandwich", price: 13.49, description: "Crispy buttermilk-fried chicken breast with coleslaw, pickles, and spicy mayo on a toasted bun.", category: "Burgers", calories: 720, isPopular: true, available: true },
-    { id: "s-3", name: "Double Stack Burger", price: 15.99, description: "Two quarter-pound patties stacked high with double cheese, caramelized onions, and smoky BBQ sauce.", category: "Burgers", calories: 950, isPopular: true, available: true },
-    { id: "s-4", name: "Veggie Garden Burger", price: 11.99, description: "House-made plant-based patty with roasted peppers, arugula, and herb aioli.", category: "Burgers", calories: 480, isPopular: false, available: true },
-    { id: "s-5", name: "Grilled Filet Mignon", price: 24.99, description: "Premium 8oz filet mignon grilled to your liking, served with herb butter and fresh-cut fries.", category: "Steaks & Grills", calories: 680, isPopular: true, available: true },
-    { id: "s-6", name: "Herb-Crusted Ribeye", price: 22.99, description: "12oz ribeye with a rosemary-garlic crust, served with roasted vegetables.", category: "Steaks & Grills", calories: 850, isPopular: false, available: true },
-    { id: "s-7", name: "BBQ Grilled Chicken", price: 16.99, description: "Juicy half chicken basted in our house-made BBQ sauce, slow-grilled over open flame.", category: "Steaks & Grills", calories: 620, isPopular: true, available: true },
-    { id: "s-8", name: "Carbonara", price: 14.99, description: "Classic spaghetti carbonara with crispy pancetta, parmesan, egg yolk, and cracked black pepper.", category: "Pasta & Bowls", calories: 780, isPopular: true, available: true },
-    { id: "s-9", name: "Grilled Chicken Bowl", price: 14.49, description: "Herb-marinated grilled chicken over quinoa with roasted vegetables, avocado, and lemon tahini dressing.", category: "Pasta & Bowls", calories: 550, isPopular: true, available: true },
-    { id: "s-10", name: "Penne Arrabbiata", price: 13.49, description: "Penne in a fiery tomato sauce with garlic, chili flakes, and fresh basil.", category: "Pasta & Bowls", calories: 620, isPopular: false, available: true },
-    { id: "s-11", name: "Fresh-Cut Fries", price: 4.49, description: "Hand-cut fries, crispy on the outside, fluffy inside. Seasoned with sea salt.", category: "Sides", calories: 380, isPopular: true, available: true },
-    { id: "s-12", name: "Sweet Potato Fries", price: 5.49, description: "Crispy sweet potato fries served with chipotle aioli dipping sauce.", category: "Sides", calories: 340, isPopular: false, available: true },
-    { id: "s-13", name: "Onion Rings", price: 5.49, description: "Beer-battered onion rings, golden and crunchy, served with ranch dipping sauce.", category: "Sides", calories: 420, isPopular: false, available: true },
-    { id: "s-14", name: "Garden Salad", price: 6.99, description: "Mixed greens, cherry tomatoes, cucumber, red onion, and croutons with your choice of dressing.", category: "Sides", calories: 180, isPopular: false, available: true },
-    { id: "s-15", name: "Fresh Lemonade", price: 4.99, description: "Hand-squeezed lemon juice with just the right amount of sweetness. Served ice cold.", category: "Fresh Juices & Drinks", calories: 120, isPopular: true, available: true },
-    { id: "s-16", name: "Tropical Mango Smoothie", price: 5.99, description: "Creamy mango, banana, and coconut milk blended to tropical perfection.", category: "Fresh Juices & Drinks", calories: 280, isPopular: true, available: true },
-    { id: "s-17", name: "Berry Blast Smoothie", price: 5.49, description: "A vibrant mix of strawberries, blueberries, raspberries, and Greek yogurt.", category: "Fresh Juices & Drinks", calories: 220, isPopular: false, available: true },
-    { id: "s-18", name: "Green Detox Juice", price: 6.99, description: "A revitalizing blend of kale, cucumber, celery, green apple, and fresh ginger.", category: "Fresh Juices & Drinks", calories: 90, isPopular: false, available: true },
-    { id: "s-19", name: "Chocolate Brownie", price: 5.99, description: "Rich, fudgy chocolate brownie baked fresh daily. Served warm with a scoop of vanilla ice cream.", category: "Desserts", calories: 480, isPopular: true, available: true },
-    { id: "s-20", name: "Fresh Fruit Cup", price: 4.99, description: "A colorful mix of seasonal fresh fruits — strawberries, blueberries, mango, and kiwi.", category: "Desserts", calories: 120, isPopular: false, available: true },
-  ];
+  return [];
 }
 
 // ─── Serve built frontend ────────────────────────────────────────
@@ -1315,7 +1294,7 @@ app.get("*", (_req, res) => {
 // ─── Start ───────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`\n🍽️  Scott's Fresh Kitchens V2 — Voice Gateway`);
+  console.log(`\n✈️  Fly Delta — Voice Gateway`);
   console.log(`   Running on port ${PORT}`);
   console.log(`   Agent ID: ${SF_AGENT_ID || "NOT SET"}`);
   console.log(`   Instance: ${SF_LOGIN_URL}`);
