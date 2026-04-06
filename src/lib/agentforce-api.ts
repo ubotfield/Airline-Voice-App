@@ -54,7 +54,7 @@ export class AgentforceSession {
         this.personaVarsCache.push({ name: "CustomerEmail", type: "Text", value: persona.customerEmail });
       }
       if (parts.length > 0) {
-        this.personaContext = `[Customer info — do not ask again: ${parts.join(", ")}. IMPORTANT: Be concise in voice responses — do not repeat information the customer already knows like loyalty points or order details unless specifically asked. Keep responses short and conversational.] `;
+        this.personaContext = `[Customer info — do not ask again: ${parts.join(", ")}. This is a voice conversation — keep responses natural and conversational, around 2-3 sentences. Avoid repeating details the customer already heard earlier in the conversation.] `;
       }
     } catch { /* ignore */ }
   }
