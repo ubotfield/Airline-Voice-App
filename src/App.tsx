@@ -11,6 +11,7 @@ import { Profile } from './components/Profile';
 import { VoiceAssistant } from './components/VoiceAssistant';
 import { NotificationStack } from './components/NotificationStack';
 import { NotificationProvider } from './lib/notifications';
+import { DebugConsole } from './components/DebugConsole';
 
 type Tab = 'home' | 'trips' | 'boardingpass' | 'checkin' | 'skymiles' | 'profile';
 
@@ -97,6 +98,9 @@ function AppContent() {
         onToggle={() => setVoiceOpen(false)}
         onVoiceResult={(result) => setVoiceResult(result)}
       />
+
+      {/* In-App Debug Console */}
+      <DebugConsole />
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pb-8 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl border-t border-outline-variant/20 shadow-[0_-4px_20px_rgba(0,27,60,0.08)]">
