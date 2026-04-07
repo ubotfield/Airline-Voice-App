@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Plane, Plus, Minus, Info, ChevronRight, CheckCircle, Mic } from 'lucide-react';
+import { Plane, Plus, Minus, Info, ChevronRight, CheckCircle } from 'lucide-react';
+import { MicFilled } from './icons/MicFilled';
 
 type CheckInStep = 'flight' | 'bags' | 'review';
 
@@ -25,7 +26,7 @@ export const CheckIn: React.FC = () => {
         className="bg-primary-container text-white p-5 rounded-2xl shadow-xl flex items-center gap-5 border-b-4 border-secondary"
       >
         <div className="flex-shrink-0 w-12 h-12 bg-secondary rounded-full flex items-center justify-center animate-pulse">
-          <Mic size={20} className="text-white" />
+          <MicFilled size={20} className="text-white" />
         </div>
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">

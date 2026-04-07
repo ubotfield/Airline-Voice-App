@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Star, Plane, ArrowRight, Mic } from 'lucide-react';
+import { Star, Plane, ArrowRight } from 'lucide-react';
+import { MicFilled } from './icons/MicFilled';
 
 export const SkyMiles: React.FC = () => {
   return (
@@ -67,7 +68,7 @@ export const SkyMiles: React.FC = () => {
         className="bg-surface-container-high rounded-xl p-5 flex items-center gap-4 cursor-pointer hover:bg-surface-container-highest transition-colors"
       >
         <div className="w-12 h-12 rounded-full bg-primary flex items-center justify-center text-on-primary flex-shrink-0">
-          <Mic size={20} />
+          <MicFilled size={20} />
         </div>
         <div className="flex-1">
           <h3 className="font-bold text-primary text-sm">Ask About Your Miles</h3>

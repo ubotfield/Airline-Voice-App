@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, X, Sparkles } from "lucide-react";
+import { X, Sparkles } from "lucide-react";
+import { MicFilled } from "./icons/MicFilled";
 import { NativeVoiceService } from "../lib/native-voice";
 import { AgentforceSession } from "../lib/agentforce-api";
 import { apiUrl } from "../lib/api-base";
@@ -459,7 +460,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       className="w-24 h-24 rounded-full bg-secondary/10 absolute inset-0"
                     />
                     <div className="w-24 h-24 rounded-full bg-primary flex items-center justify-center relative z-10">
-                      <Mic size={36} className="text-white" />
+                      <MicFilled size={36} className="text-white" />
                     </div>
                     {/* Volume bars */}
                     <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 flex gap-0.5 items-end h-4">

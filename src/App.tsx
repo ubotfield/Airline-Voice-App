@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Home as HomeIcon, Plane, Mic, Star, MoreHorizontal } from 'lucide-react';
+import { Home as HomeIcon, Plane, Star, MoreHorizontal } from 'lucide-react';
+import { MicFilled } from './components/icons/MicFilled';
 import { Home } from './components/Home';
 import { Trips } from './components/Trips';
 import { BoardingPass } from './components/BoardingPass';
@@ -100,7 +101,7 @@ function AppContent() {
         {[
           { id: 'home', icon: HomeIcon, label: 'Home' },
           { id: 'trips', icon: Plane, label: 'My Trips' },
-          { id: 'assistant', icon: Mic, label: 'Assistant', isSpecial: true },
+          { id: 'assistant', label: 'Assistant', isSpecial: true },
           { id: 'skymiles', icon: Star, label: 'SkyMiles' },
           { id: 'profile', icon: MoreHorizontal, label: 'More' },
         ].map((tab) => (
@@ -115,13 +116,23 @@ function AppContent() {
             }}
             className={`flex flex-col items-center justify-center px-3 py-1 transition-all duration-300 ${
               tab.isSpecial
-                ? `text-secondary scale-110 font-bold ${voiceOpen ? 'animate-pulse' : ''}`
+                ? 'text-secondary font-bold'
                 : activeNavTab === tab.id
                   ? 'text-primary-dim'
                   : 'text-on-surface-variant hover:text-primary-dim'
             }`}
           >
-            <tab.icon size={tab.isSpecial ? 28 : 22} fill={tab.isSpecial ? "currentColor" : activeNavTab === tab.id ? "currentColor" : "none"} />
+            {tab.isSpecial ? (
+              <div className="relative -mt-5">
+                <div className={`w-14 h-14 rounded-full bg-secondary/10 flex items-center justify-center ${voiceOpen ? 'animate-pulse' : ''}`}>
+                  <MicFilled size={28} className="text-secondary" />
+                </div>
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-secondary rounded-full animate-ping" />
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-secondary rounded-full" />
+              </div>
+            ) : (
+              <tab.icon size={22} fill={activeNavTab === tab.id ? "currentColor" : "none"} />
+            )}
             <span className="font-body font-medium text-[10px] tracking-wide mt-1">
               {tab.label}
             </span>
