@@ -825,18 +825,23 @@ app.post("/api/stt", async (req, res) => {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) return res.status(503).json({ error: "STT not configured" });
 
+  // Normalize MIME type — strip codec params and map iOS types
+  let normalizedMime = (mimeType || "audio/webm").split(";")[0].trim();
+  // iOS Safari MediaRecorder produces audio/mp4 (AAC) — Gemini accepts this directly
+  console.log(`[stt] Received ${Math.round(audio.length * 0.75 / 1024)}KB audio, mime=${mimeType} → ${normalizedMime}`);
+
   try {
     const sttStart = Date.now();
     const apiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{
             parts: [
-              { inlineData: { mimeType: mimeType || "audio/webm", data: audio } },
-              { text: "Transcribe this audio exactly. Return ONLY the spoken text, nothing else. If no speech is detected, return an empty string." },
+              { inlineData: { mimeType: normalizedMime, data: audio } },
+              { text: "Transcribe this audio. Return ONLY the exact spoken words, nothing else." },
             ],
           }],
         }),
@@ -850,9 +855,14 @@ app.post("/api/stt", async (req, res) => {
     }
 
     const data = await apiRes.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-    console.log(`[stt] Transcribed in ${Date.now() - sttStart}ms:`, text.substring(0, 100));
-    return res.json({ text });
+    const candidate = data.candidates?.[0];
+    const finishReason = candidate?.finishReason || "unknown";
+    const text = candidate?.content?.parts?.[0]?.text?.trim() || "";
+    const elapsed = Date.now() - sttStart;
+    console.log(`[stt] ${elapsed}ms, finish=${finishReason}, text="${text.substring(0, 100)}"`);
+
+    // Return debug info alongside the text so the client debug console can show it
+    return res.json({ text, debug: { elapsed, finishReason, model: "gemini-2.0-flash", mime: normalizedMime } });
   } catch (err: any) {
     console.error("[stt] Error:", err.message);
     return res.status(500).json({ error: err.message });

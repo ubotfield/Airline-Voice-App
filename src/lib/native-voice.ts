@@ -860,12 +860,19 @@ export class NativeVoiceService {
 
       const data = await res.json();
       const text = data.text?.trim();
-      dbg(`STT response: "${text || "(empty)"}"`);
+      const sttDebug = data.debug;
+      const sttInfo = [
+        (sttDebug?.elapsed || "?") + "ms",
+        "finish=" + (sttDebug?.finishReason || "?"),
+        "model=" + (sttDebug?.model || "?"),
+        "mime=" + (sttDebug?.mime || "?"),
+      ].join(", ");
+      dbg("STT response: \"" + (text || "(empty)") + "\" (" + sttInfo + ")");
       if (text && text.length > 0) {
         this.callbacks.onStatusChange?.("Processing...");
         await this.routeToAgent(text);
       } else {
-        dbg(`STT returned empty — recycling to next chunk`);
+        dbg(`⚠️ STT returned empty text — discarding and recycling`);
         this.pipelineState = "idle";
         this.scheduleNextChunk();
       }
