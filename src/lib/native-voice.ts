@@ -69,6 +69,10 @@ export class NativeVoiceService {
   private pipelineSafetyTimer: number | null = null;
   private peakVolumeDuringChunk = 0;
 
+  // Listening watchdog — detects when recognition silently stalls
+  private listeningWatchdog: number | null = null;
+  private lastRecognitionActivity = 0;
+
   // Silence detection
   private silenceDetectionInterval: number | null = null;
   private silenceStartTime: number | null = null;
@@ -270,6 +274,8 @@ export class NativeVoiceService {
       }
 
       this._isConnected = true;
+      this.lastRecognitionActivity = Date.now();
+      this.startListeningWatchdog();
       dbg("connect() done — calling onOpen");
       callbacks.onOpen?.();
       callbacks.onStatusChange?.("Connected");
@@ -277,6 +283,47 @@ export class NativeVoiceService {
       dbg(`connect() FAILED: ${err?.name}: ${err?.message}`);
       callbacks.onError?.(err.message || "Connection failed");
       throw err;
+    }
+  }
+
+  // ===================================================================
+  // Listening watchdog — detects when STT silently stalls
+  // ===================================================================
+
+  private startListeningWatchdog(): void {
+    this.stopListeningWatchdog();
+    this.listeningWatchdog = window.setInterval(() => {
+      if (!this._isConnected || !this.shouldRestart || !this.greetingDone) return;
+      if (this.pipelineState !== "idle") return;
+
+      const staleDuration = Date.now() - this.lastRecognitionActivity;
+      if (staleDuration > 8000) {
+        dbg(`⚠️ Listening watchdog: no activity for ${Math.round(staleDuration / 1000)}s — forcing restart`);
+        this.lastRecognitionActivity = Date.now(); // prevent rapid re-triggers
+
+        if (this.sttMode === "speech-recognition") {
+          // Try stopping and restarting recognition
+          try { this.recognition?.stop(); } catch { /* ignore */ }
+          setTimeout(() => {
+            if (this._isConnected && this.shouldRestart) {
+              this.setupRecognition();
+              try { this.recognition.start(); } catch { /* ignore */ }
+            }
+          }, 200);
+        } else {
+          // MediaRecorder mode — just kick off a new chunk
+          this.startRecordingChunk();
+        }
+
+        this.callbacks.onStatusChange?.("Listening...");
+      }
+    }, 4000);
+  }
+
+  private stopListeningWatchdog(): void {
+    if (this.listeningWatchdog) {
+      clearInterval(this.listeningWatchdog);
+      this.listeningWatchdog = null;
     }
   }
 
@@ -376,10 +423,12 @@ export class NativeVoiceService {
     this.recognition.maxAlternatives = 1;
 
     this.recognition.onstart = () => {
+      this.lastRecognitionActivity = Date.now();
       dbg(`recognition.onstart — shouldRestart=${this.shouldRestart} pipeline=${this.pipelineState}`);
       if (this.shouldRestart) this.callbacks.onStatusChange?.("Listening...");
     };
     this.recognition.onresult = (event: any) => {
+      this.lastRecognitionActivity = Date.now();
       const last = event.results[event.results.length - 1];
       if (last.isFinal) {
         const text = last[0].transcript.trim();
@@ -428,6 +477,7 @@ export class NativeVoiceService {
   private startRecordingChunk(): void {
     if (!this._isConnected || !this.shouldRestart) return;
     if (this.pipelineState !== "idle") return;
+    this.lastRecognitionActivity = Date.now();
 
     if (!this.mediaStream) {
       this.refreshMicStream().then(() => {
@@ -816,6 +866,7 @@ export class NativeVoiceService {
 
     // Ensure pipelineState is idle before trying to listen
     this.pipelineState = "idle";
+    this.lastRecognitionActivity = Date.now(); // reset watchdog
     this.callbacks.onStatusChange?.("Listening...");
 
     if (this.sttMode === "speech-recognition") {
@@ -1388,6 +1439,7 @@ export class NativeVoiceService {
     this.greetingDone = false;
     this.pipelineState = "idle";
 
+    this.stopListeningWatchdog();
     this.stopBargeInDetection();
     this.stopSilenceDetection();
     this.cancelAllPlayback();

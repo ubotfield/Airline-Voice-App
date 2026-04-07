@@ -206,7 +206,8 @@ export class AgentforceSession {
       onAudioChunk?: (pcmBase64: string, index: number, sentenceIndex: number) => void;
       onDone?: (fullText: string) => void;
       onError?: (error: string) => void;
-    }
+    },
+    options?: { skipFiller?: boolean }
   ): Promise<{ response: string }> {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
@@ -220,6 +221,7 @@ export class AgentforceSession {
         message: text,
         sequenceId: this.sequenceId,
         variables,
+        ...(options?.skipFiller ? { skipFiller: true } : {}),
       }),
     });
 

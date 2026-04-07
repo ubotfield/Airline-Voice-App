@@ -447,7 +447,9 @@ app.post("/api/agent/message-stream", async (req, res) => {
     console.log(`[msg-stream] Starting streaming for session ${sessionId}`);
 
     // #3: Send thinking filler audio immediately (if cached)
-    if (thinkingFillerAudio) {
+    // Skip filler for greetings — the "One moment" audio shouldn't play as the first thing a user hears
+    const skipFiller = req.body.skipFiller === true;
+    if (thinkingFillerAudio && !skipFiller) {
       res.write(`data: ${JSON.stringify({ type: "audio", chunk: thinkingFillerAudio, index: 0, sentenceIndex: -1 })}\n\n`);
       firstAudioSentTime = Date.now() - totalStart;
       console.log(`[msg-stream] Thinking filler sent at +${firstAudioSentTime}ms`);

@@ -278,7 +278,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     },
                     onDone: (fullText) => { greetingText = fullText || greetingText; },
                     onError: (error) => { console.warn("[voice] Greeting stream error:", error); },
-                  });
+                  }, { skipFiller: true });
 
                   greetingText = response || greetingText;
 
@@ -492,10 +492,35 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     };
   }, []);
 
-  const showOverlay = isActive || isConnecting || hasError;
+  // Only show full overlay once mic is granted (isActive), not during mic permission dialog (isConnecting)
+  const showOverlay = isActive || hasError;
 
   return (
     <>
+      {/* Connecting indicator — shows during mic permission (no overlay blur) */}
+      <AnimatePresence>
+        {isConnecting && !isActive && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[99] bg-primary text-white px-5 py-3 rounded-full shadow-xl flex items-center gap-3"
+          >
+            <div className="flex gap-1">
+              {[0, 1, 2].map(i => (
+                <motion.div
+                  key={i}
+                  animate={{ y: [0, -5, 0] }}
+                  transition={{ repeat: Infinity, duration: 0.5, delay: i * 0.12 }}
+                  className="w-1.5 h-1.5 bg-white rounded-full"
+                />
+              ))}
+            </div>
+            <span className="text-sm font-medium">Connecting...</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Full-Screen Bottom Sheet Overlay */}
       <AnimatePresence>
         {showOverlay && (
@@ -532,8 +557,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 </div>
               )}
 
-              {/* Connecting State */}
-              {isConnecting && (
+              {/* Connecting State — shown inside overlay if it appears after mic granted */}
+              {isConnecting && isActive && (
                 <div className="flex items-center gap-3 mb-4">
                   <div className="flex gap-1">
                     {[0, 1, 2].map(i => (
