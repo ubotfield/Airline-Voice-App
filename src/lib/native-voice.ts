@@ -293,7 +293,28 @@ export class NativeVoiceService {
   private startListeningWatchdog(): void {
     this.stopListeningWatchdog();
     this.listeningWatchdog = window.setInterval(() => {
-      if (!this._isConnected || !this.shouldRestart || !this.greetingDone) return;
+      if (!this._isConnected || !this.greetingDone) return;
+
+      // 2B: Detect stale "speaking" state — if stuck speaking for >15s with no
+      // active audio sources, force-reset to idle and resume listening.
+      if (this.pipelineState === "speaking") {
+        const staleDuration = Date.now() - this.lastRecognitionActivity;
+        if (staleDuration > 15000) {
+          const hasActiveAudio = this.streamingDraining || this.currentAudioElement || this.currentAudioSource;
+          if (!hasActiveAudio) {
+            dbg(`⚠️ Watchdog: stuck in "speaking" for ${Math.round(staleDuration / 1000)}s with no audio — force-resetting`);
+            this.lastRecognitionActivity = Date.now();
+            this.pipelineState = "idle";
+            this.cancelAllPlayback();
+            this.shouldRestart = true;
+            this.callbacks.onStatusChange?.("Listening...");
+            this.resumeListening();
+          }
+        }
+        return;
+      }
+
+      if (!this.shouldRestart) return;
       if (this.pipelineState !== "idle") return;
 
       const staleDuration = Date.now() - this.lastRecognitionActivity;
@@ -588,6 +609,13 @@ export class NativeVoiceService {
   private startSilenceDetection(): void {
     this.stopSilenceDetection();
     if (!this.volumeAnalyser) return;
+
+    // 2C: iOS suspends the monitoring AudioContext after TTS playback —
+    // resume it before starting silence detection so analyser data is live.
+    if (this.audioContext && this.audioContext.state === "suspended") {
+      dbg("startSilenceDetection: resuming suspended monitoring AudioContext");
+      this.audioContext.resume().catch(() => {});
+    }
 
     const dataArray = new Uint8Array(this.volumeAnalyser.frequencyBinCount);
     const recordingStartTime = Date.now();
@@ -898,8 +926,13 @@ export class NativeVoiceService {
       this.mediaStream?.getTracks().forEach(t => t.stop());
       this.mediaStream = newStream;
       this.setupVolumeMonitor(newStream);
-    } catch {
-      dbg("refreshMicStream failed, keeping old stream");
+      // 3C: Log new track state for debugging mic issues
+      const track = newStream.getAudioTracks()[0];
+      dbg(`refreshMicStream: new track state=${track?.readyState} enabled=${track?.enabled} label=${track?.label}`);
+    } catch (err: any) {
+      // 3C: Log failure details
+      const oldTrack = this.mediaStream?.getAudioTracks()?.[0];
+      dbg(`refreshMicStream failed: ${err?.message} — old track state=${oldTrack?.readyState ?? "none"}`);
     }
   }
 
@@ -982,7 +1015,9 @@ export class NativeVoiceService {
         await this.resumeListening();
       }
     } finally {
-      if (this.pipelineState === "speaking") this.pipelineState = "idle";
+      // 2A: Always reset to idle — prevents stuck "speaking" state if an exception
+      // occurs in a path that already changed pipelineState to something unexpected
+      this.pipelineState = "idle";
     }
   }
 
@@ -1006,10 +1041,8 @@ export class NativeVoiceService {
   }
 
   addStreamingChunk(pcmBase64: string): void {
-    // Decode base64 to raw PCM bytes
-    const binaryStr = atob(pcmBase64);
-    const bytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+    // 3A: Faster base64 decode — single-expression instead of char-by-char loop
+    const bytes = Uint8Array.from(atob(pcmBase64), c => c.charCodeAt(0));
     this.streamingAudioQueue.push(bytes.buffer);
 
     // Start playback if not already playing
@@ -1024,6 +1057,11 @@ export class NativeVoiceService {
 
     if (!this.playbackContext || this.playbackContext.state === "closed") {
       this.streamingDraining = false;
+      // 1B: Always check streamingResolve on early exit
+      if (this.streamingResolve && this.streamingAudioQueue.length === 0) {
+        this.streamingResolve();
+        this.streamingResolve = null;
+      }
       return;
     }
     if (this.playbackContext.state === "suspended") {
@@ -1058,8 +1096,10 @@ export class NativeVoiceService {
 
     this.streamingDraining = false;
 
-    // If finishStreamingPlayback was called and we've drained everything, resolve
-    if (!this.streamingPlaybackActive && this.streamingAudioQueue.length === 0 && this.streamingResolve) {
+    // 1B: Always resolve if streamingResolve exists and queue is drained
+    // (removed the !streamingPlaybackActive guard — finishStreamingPlayback sets it false
+    //  but the race window between drain exit and resolve assignment caused deadlocks)
+    if (this.streamingAudioQueue.length === 0 && this.streamingResolve) {
       this.streamingResolve();
       this.streamingResolve = null;
     }
@@ -1071,14 +1111,23 @@ export class NativeVoiceService {
 
     // If nothing is playing and queue is empty, we're done
     if (!this.streamingDraining && this.streamingAudioQueue.length === 0) {
-      // #5: Reduced from 300ms to 80ms — just enough to avoid speaker echo
+      // Also clear any orphaned resolve from a previous cycle
+      if (this.streamingResolve) { this.streamingResolve(); this.streamingResolve = null; }
       return new Promise(r => setTimeout(r, 80));
     }
 
-    // Wait for the drain loop to finish playing all remaining chunks
+    // 1A: Wait for drain with a safety timeout to prevent permanent hangs
     return new Promise<void>((resolve) => {
+      const safetyTimer = setTimeout(() => {
+        dbg("⚠️ finishStreamingPlayback: 5s safety timeout — force-resolving");
+        this.streamingResolve = null;
+        this.streamingDraining = false;
+        this.streamingAudioQueue = [];
+        resolve();
+      }, 5000);
+
       this.streamingResolve = () => {
-        // #5: Reduced from 300ms to 80ms
+        clearTimeout(safetyTimer);
         setTimeout(resolve, 80);
       };
       // If drain loop isn't running but there are queued chunks, kick it off
@@ -1205,6 +1254,8 @@ export class NativeVoiceService {
         dbg("Creating fresh playback AudioContext");
         this.playbackContext = new AudioContext();
       }
+      // 3B: Skip resume() if already running — saves an async hop per chunk
+      if (this.playbackContext.state === "running") return;
       if (this.playbackContext.state === "suspended") {
         dbg("Resuming suspended playback AudioContext");
         await this.playbackContext.resume();
