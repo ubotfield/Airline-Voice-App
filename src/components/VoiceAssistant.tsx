@@ -9,13 +9,12 @@ import { cn } from "../lib/utils";
 import { useNotifications, parseAgentResponse } from "../lib/notifications";
 
 /**
- * VoiceAssistant V7 — Compact listening + structured result cards.
+ * VoiceAssistant V8 — Non-blocking listening + bottom sheet for results.
  *
- * Matches Screen 4 design reference:
- * - Compact listening indicator (never blocks results)
- * - Structured flight/miles/upgrade result cards
- * - Quick-action chips below responses
- * - All V5 streaming/TTS optimizations preserved
+ * UX model:
+ *   - Compact floating bar while listening (no overlay, no blur)
+ *   - Bottom sheet with backdrop blur ONLY when results are displayed
+ *   - Transitions smoothly between the two states
  */
 
 /* ── Result card type detection ─────────────────────────────── */
@@ -81,7 +80,7 @@ function parseResponseToCard(text: string): ParsedCard {
       miles: {
         balance: milesMatch?.[1] || "---",
         tier: tierMatch?.[1] ? `${tierMatch[1]} Medallion` : "",
-        progress: "", // could be extracted
+        progress: "",
       },
       chips: ["Earn more miles", "Redeem miles", "Recent activity"],
     };
@@ -184,12 +183,10 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const prevIsOpenRef = useRef(isOpen);
   useEffect(() => {
     if (isOpen && !prevIsOpenRef.current) {
-      // External open request — start the assistant
       if (!isActive && !isConnecting && !hasError) {
         toggleAssistant();
       }
     } else if (!isOpen && prevIsOpenRef.current) {
-      // External close request — stop the assistant
       if (isActive || isConnecting || hasError) {
         toggleAssistant();
       }
@@ -217,7 +214,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       try { native?.disconnect(); } catch { /* ignore */ }
       try { agent?.end(); } catch { /* ignore */ }
 
-      // Notify parent to sync state
       onToggle?.();
     } else {
       // ─── Start ────────────────────────────────────────────
@@ -261,8 +257,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               if (agentRef.current?.isActive) {
                 setStatus("Getting greeting...");
 
-                // #6: Use streaming for greeting — audio starts playing as first sentence arrives
-                // instead of waiting for full agent response + full TTS synthesis (~2-4s faster)
                 try {
                   let greetingText = "";
                   let streamingWorked = false;
@@ -287,7 +281,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   }
 
                   if (!agentRef.current?.isActive) return;
-                  // Signal greeting complete — native voice will resume listening
                   await nativeRef.current?.sendGreeting(greetingText ? "" : "");
                 } catch (streamErr) {
                   console.warn("[voice] Greeting streaming failed, trying sync:", streamErr);
@@ -492,12 +485,18 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     };
   }, []);
 
-  // Only show full overlay once mic is granted (isActive), not during mic permission dialog (isConnecting)
-  const showOverlay = isActive || hasError;
+  // ─── V8 Overlay logic ───────────────────────────────────────
+  // Bottom sheet with blur ONLY when there's content to show
+  const hasContent = turns.length > 0 || !!currentUserText || hasError;
+  const showBottomSheet = isActive && hasContent;
+  // Compact floating bar when listening with no content yet
+  const showCompactBar = isActive && !hasContent && !isConnecting;
 
   return (
     <>
-      {/* Connecting indicator — shows during mic permission (no overlay blur) */}
+      {/* ══════════════════════════════════════════════════════════════
+          Connecting indicator — shows during mic permission (no blur)
+          ══════════════════════════════════════════════════════════════ */}
       <AnimatePresence>
         {isConnecting && !isActive && (
           <motion.div
@@ -521,9 +520,71 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Full-Screen Bottom Sheet Overlay */}
+      {/* ══════════════════════════════════════════════════════════════
+          V8: Compact floating listening bar — NO overlay, NO blur
+          Shows when active but no results yet
+          ══════════════════════════════════════════════════════════════ */}
       <AnimatePresence>
-        {showOverlay && (
+        {showCompactBar && (
+          <motion.div
+            initial={{ opacity: 0, y: 40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 40 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            className="fixed bottom-24 left-4 right-4 z-[100] bg-surface-container-lowest rounded-2xl shadow-2xl border border-outline-variant/10 px-4 py-3 flex items-center gap-3"
+          >
+            {/* Pulsing mic icon */}
+            <div className="relative flex-shrink-0">
+              <motion.div
+                animate={{ scale: [1, 1.3, 1], opacity: [0.3, 0.6, 0.3] }}
+                transition={{ repeat: Infinity, duration: 2 }}
+                className="w-10 h-10 rounded-full bg-secondary/20 absolute inset-0"
+              />
+              <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center relative z-10">
+                <MicFilled size={18} className="text-white" />
+              </div>
+            </div>
+
+            {/* Status text */}
+            <div className="flex-1 min-w-0">
+              <p className="font-headline font-extrabold text-sm text-primary truncate">
+                {status === "Listening..." || status === "Connected"
+                  ? "Listening..."
+                  : status === "Speaking..." || status === "Getting greeting..."
+                    ? "Speaking..."
+                    : status}
+              </p>
+              <p className="text-on-surface-variant text-xs truncate">Ask about flights, upgrades, miles, or baggage</p>
+            </div>
+
+            {/* Volume bars */}
+            <div className="flex gap-0.5 items-end h-5 flex-shrink-0">
+              {[...Array(4)].map((_, i) => (
+                <motion.div
+                  key={i}
+                  animate={{ height: Math.max(4, volume * (6 + i * 6)) }}
+                  transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                  className="w-1 bg-secondary rounded-full"
+                />
+              ))}
+            </div>
+
+            {/* Close button */}
+            <button
+              onClick={toggleAssistant}
+              className="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center flex-shrink-0 hover:bg-surface-container-highest transition-colors"
+            >
+              <X size={14} className="text-on-surface-variant" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ══════════════════════════════════════════════════════════════
+          V8: Bottom Sheet with backdrop blur — ONLY when showing results
+          ══════════════════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showBottomSheet && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -557,58 +618,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 </div>
               )}
 
-              {/* Connecting State — shown inside overlay if it appears after mic granted */}
-              {isConnecting && isActive && (
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="flex gap-1">
-                    {[0, 1, 2].map(i => (
-                      <motion.div
-                        key={i}
-                        animate={{ y: [0, -8, 0] }}
-                        transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.15 }}
-                        className="w-2 h-2 bg-secondary rounded-full"
-                      />
-                    ))}
-                  </div>
-                  <p className="text-on-surface-variant text-sm font-medium">Connecting to Delta Sky Assistant...</p>
-                </div>
-              )}
-
-              {/* ── Compact Listening Indicator (always shown when listening) ── */}
-              {isListening && !currentUserText && !isConnecting && (
-                <div className="flex items-center gap-3 py-3 mb-4">
-                  <div className="relative">
-                    <motion.div
-                      animate={{ scale: [1, 1.25, 1] }}
-                      transition={{ repeat: Infinity, duration: 1.8 }}
-                      className="w-10 h-10 rounded-full bg-secondary/10 absolute inset-0"
-                    />
-                    <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center relative z-10">
-                      <MicFilled size={18} className="text-white" />
-                    </div>
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-headline font-extrabold text-sm text-primary">
-                      {turns.length === 0 ? "Listening..." : "Listening for your next question..."}
-                    </p>
-                    {turns.length === 0 && (
-                      <p className="text-on-surface-variant text-xs mt-0.5">Ask about flights, upgrades, miles, or baggage</p>
-                    )}
-                  </div>
-                  {/* Volume bars */}
-                  <div className="flex gap-0.5 items-end h-5 mr-2">
-                    {[...Array(4)].map((_, i) => (
-                      <motion.div
-                        key={i}
-                        animate={{ height: Math.max(4, volume * (6 + i * 6)) }}
-                        transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                        className="w-1 bg-secondary rounded-full"
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* ── Conversation History with Structured Cards ── */}
               {turns.map((turn) => {
                 const card = parseResponseToCard(turn.agentText);
@@ -633,16 +642,13 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     {/* ─ Flight Card ─ */}
                     {card.type === "flight" && card.flight && (
                       <div className="bg-primary text-white rounded-2xl p-5 shadow-xl border-l-4 border-secondary relative overflow-hidden mb-4">
-                        {/* Background plane icon */}
                         <div className="absolute top-0 right-0 p-4 opacity-10">
                           <Plane size={56} />
                         </div>
                         <div className="relative z-10">
-                          {/* Top Match badge */}
                           <span className="text-[10px] font-black uppercase tracking-[0.2em] bg-secondary px-2 py-1 rounded-sm inline-block mb-3">
                             Top Match
                           </span>
-                          {/* Route display */}
                           <div className="flex items-center gap-4 mb-4">
                             <div>
                               <p className="text-2xl font-black">{card.flight.from}</p>
@@ -662,7 +668,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                               <p className="text-[10px] opacity-70">{card.flight.arrTime}</p>
                             </div>
                           </div>
-                          {/* Price + CTA */}
                           {card.flight.price && (
                             <div className="flex items-center justify-between pt-4 border-t border-white/10">
                               <div>
@@ -766,6 +771,37 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       ))}
                     </div>
                     <p className="text-on-surface-variant text-xs font-medium">{status}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Compact listening indicator inside bottom sheet (when results exist) ── */}
+              {isListening && !currentUserText && turns.length > 0 && (
+                <div className="flex items-center gap-3 py-3 mb-4">
+                  <div className="relative">
+                    <motion.div
+                      animate={{ scale: [1, 1.25, 1] }}
+                      transition={{ repeat: Infinity, duration: 1.8 }}
+                      className="w-10 h-10 rounded-full bg-secondary/10 absolute inset-0"
+                    />
+                    <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center relative z-10">
+                      <MicFilled size={18} className="text-white" />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-headline font-extrabold text-sm text-primary">
+                      Listening for your next question...
+                    </p>
+                  </div>
+                  <div className="flex gap-0.5 items-end h-5 mr-2">
+                    {[...Array(4)].map((_, i) => (
+                      <motion.div
+                        key={i}
+                        animate={{ height: Math.max(4, volume * (6 + i * 6)) }}
+                        transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                        className="w-1 bg-secondary rounded-full"
+                      />
+                    ))}
                   </div>
                 </div>
               )}

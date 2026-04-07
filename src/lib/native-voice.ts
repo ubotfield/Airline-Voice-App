@@ -314,6 +314,39 @@ export class NativeVoiceService {
         return;
       }
 
+      // PWA fix: Detect stuck "recording" state (>12s — well past the 8s chunk cap)
+      if (this.pipelineState === "recording") {
+        const staleDuration = Date.now() - this.lastRecognitionActivity;
+        if (staleDuration > 12000) {
+          dbg(`⚠️ Watchdog: stuck in "recording" for ${Math.round(staleDuration / 1000)}s — force-resetting`);
+          this.lastRecognitionActivity = Date.now();
+          this.stopSilenceDetection();
+          this.clearChunkTimer();
+          if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+            try { this.mediaRecorder.stop(); } catch { /* ignore */ }
+          }
+          this.pipelineState = "idle";
+          this.shouldRestart = true;
+          this.callbacks.onStatusChange?.("Listening...");
+          this.scheduleNextChunk();
+        }
+        return;
+      }
+
+      // PWA fix: Detect stuck "transcribing" state (>20s — server STT shouldn't take this long)
+      if (this.pipelineState === "transcribing") {
+        const staleDuration = Date.now() - this.lastRecognitionActivity;
+        if (staleDuration > 20000) {
+          dbg(`⚠️ Watchdog: stuck in "transcribing" for ${Math.round(staleDuration / 1000)}s — force-resetting`);
+          this.lastRecognitionActivity = Date.now();
+          this.pipelineState = "idle";
+          this.shouldRestart = true;
+          this.callbacks.onStatusChange?.("Listening...");
+          this.scheduleNextChunk();
+        }
+        return;
+      }
+
       if (!this.shouldRestart) return;
       if (this.pipelineState !== "idle") return;
 
@@ -522,6 +555,13 @@ export class NativeVoiceService {
     this.callbacks.onStatusChange?.("Listening...");
     this.recordedChunks = [];
 
+    // PWA fix: Resume monitoring AudioContext before recording — if suspended,
+    // silence detection won't work and recording will always run the full 8s.
+    if (this.audioContext && this.audioContext.state === "suspended") {
+      dbg("startRecordingChunk: resuming suspended monitoring AudioContext");
+      this.audioContext.resume().catch(() => {});
+    }
+
     try {
       const options: MediaRecorderOptions = this.supportedMimeType
         ? { mimeType: this.supportedMimeType, audioBitsPerSecond: 64000 }
@@ -573,9 +613,20 @@ export class NativeVoiceService {
 
     try {
       this.mediaRecorder.start(250);
-    } catch {
+    } catch (startErr: any) {
+      dbg(`MediaRecorder.start() failed: ${startErr?.message} — refreshing mic and retrying`);
       this.pipelineState = "idle";
-      this.scheduleNextChunk();
+      // PWA fix: Refresh mic before retry — the track may have ended after TTS
+      this.refreshMicStream().then(() => {
+        if (this._isConnected && this.shouldRestart && this.pipelineState === "idle") {
+          // Delay slightly to avoid tight retry loop
+          setTimeout(() => this.scheduleNextChunk(), 300);
+        }
+      }).catch(() => {
+        if (this._isConnected && this.shouldRestart) {
+          setTimeout(() => this.scheduleNextChunk(), 500);
+        }
+      });
       return;
     }
 
