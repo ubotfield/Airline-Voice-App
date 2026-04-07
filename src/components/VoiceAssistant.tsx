@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { X, Sparkles } from "lucide-react";
+import { X, Sparkles, Plane, Star, ArrowUpCircle, Luggage } from "lucide-react";
 import { MicFilled } from "./icons/MicFilled";
 import { NativeVoiceService } from "../lib/native-voice";
 import { AgentforceSession } from "../lib/agentforce-api";
@@ -9,14 +9,122 @@ import { cn } from "../lib/utils";
 import { useNotifications, parseAgentResponse } from "../lib/notifications";
 
 /**
- * VoiceAssistant V6 — Bottom sheet design matching Screen 4 reference.
+ * VoiceAssistant V7 — Compact listening + structured result cards.
  *
- * Features:
- * - Full-screen overlay with blurred background
- * - Bottom sheet with user transcript + agent response cards
- * - Cascading notification integration
+ * Matches Screen 4 design reference:
+ * - Compact listening indicator (never blocks results)
+ * - Structured flight/miles/upgrade result cards
+ * - Quick-action chips below responses
  * - All V5 streaming/TTS optimizations preserved
  */
+
+/* ── Result card type detection ─────────────────────────────── */
+type CardType = "flight" | "miles" | "upgrade" | "baggage" | "generic";
+
+interface ParsedCard {
+  type: CardType;
+  headline: string;
+  flight?: { from: string; to: string; number: string; depTime: string; arrTime: string; duration: string; price: string };
+  miles?: { balance: string; tier: string; progress?: string };
+  upgrade?: { cabin: string; seat: string; cost: string };
+  chips: string[];
+}
+
+function parseResponseToCard(text: string): ParsedCard {
+  const lower = text.toLowerCase();
+
+  // Flight info detection
+  const flightMatch = text.match(/DL\s*\d+/i);
+  const routeMatch = text.match(/(\b[A-Z]{3})\b.*?(?:to|→|->)\s*(\b[A-Z]{3})\b/i);
+  const priceMatch = text.match(/\$(\d[\d,]*)/);
+  const timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/gi);
+  const durationMatch = text.match(/(\d+h\s*\d+m|\d+\s*hour)/i);
+  const gateMatch = text.match(/gate\s*(\w+)/i);
+
+  if ((lower.includes("flight") || flightMatch) && (routeMatch || lower.includes("on time") || lower.includes("delayed") || gateMatch || timeMatch)) {
+    const headline = flightMatch
+      ? lower.includes("on time") || lower.includes("delayed") || lower.includes("gate")
+        ? `Flight ${flightMatch[0]} status updated.`
+        : `I found a flight for you.`
+      : "Here's your flight information.";
+
+    const chips: string[] = [];
+    if (lower.includes("status") || lower.includes("on time") || lower.includes("delayed")) {
+      chips.push("Check gate info", "Notify me of changes", "Seat map");
+    } else {
+      chips.push("Later flights", "Cheapest first", "Direct only");
+    }
+
+    return {
+      type: "flight",
+      headline,
+      flight: {
+        from: routeMatch?.[1]?.toUpperCase() || "ATL",
+        to: routeMatch?.[2]?.toUpperCase() || "---",
+        number: flightMatch?.[0] || "DL ---",
+        depTime: timeMatch?.[0] || "--:--",
+        arrTime: timeMatch?.[1] || "--:--",
+        duration: durationMatch?.[1] || "",
+        price: priceMatch ? `$${priceMatch[1]}` : "",
+      },
+      chips,
+    };
+  }
+
+  // Miles / loyalty detection
+  const milesMatch = text.match(/([\d,]+)\s*miles/i);
+  const tierMatch = text.match(/(gold|silver|platinum|diamond)\s*medallion/i);
+  if (milesMatch || tierMatch || (lower.includes("skymiles") || lower.includes("loyalty"))) {
+    return {
+      type: "miles",
+      headline: milesMatch ? "Your SkyMiles balance." : "Your loyalty status.",
+      miles: {
+        balance: milesMatch?.[1] || "---",
+        tier: tierMatch?.[1] ? `${tierMatch[1]} Medallion` : "",
+        progress: "", // could be extracted
+      },
+      chips: ["Earn more miles", "Redeem miles", "Recent activity"],
+    };
+  }
+
+  // Upgrade detection
+  if (lower.includes("upgrade")) {
+    const cabinMatch = text.match(/(first class|delta one|comfort\+|premium select)/i);
+    const seatMatch = text.match(/seat\s*(\w+)/i);
+    return {
+      type: "upgrade",
+      headline: lower.includes("confirmed") || lower.includes("complete")
+        ? "Your upgrade is confirmed!"
+        : "Upgrade options available.",
+      upgrade: {
+        cabin: cabinMatch?.[1] || "Premium cabin",
+        seat: seatMatch?.[1] || "",
+        cost: priceMatch ? `$${priceMatch[1]}` : milesMatch ? `${milesMatch[1]} miles` : "",
+      },
+      chips: ["View seat map", "Upgrade another flight", "Check status"],
+    };
+  }
+
+  // Baggage detection
+  if (lower.includes("bag") || lower.includes("luggage") || lower.includes("checked")) {
+    return {
+      type: "baggage",
+      headline: "Here's your baggage info.",
+      chips: ["Track my bag", "Add another bag", "File a claim"],
+    };
+  }
+
+  // Generic — derive natural chips
+  const chips: string[] = [];
+  if (lower.includes("help") || lower.includes("can i")) chips.push("Tell me more");
+  if (chips.length === 0) chips.push("Tell me more", "Another question");
+
+  return {
+    type: "generic",
+    headline: "",
+    chips,
+  };
+}
 
 interface VoiceAssistantProps {
   isOpen?: boolean;
@@ -409,32 +517,187 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 </div>
               )}
 
-              {/* Conversation History */}
-              {turns.map((turn) => (
-                <div key={turn.id} className="mb-6">
-                  {/* User said */}
-                  <div className="mb-2">
-                    <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
-                    <p className="text-primary font-medium text-base italic">"{turn.userText}"</p>
+              {/* ── Compact Listening Indicator (always shown when listening) ── */}
+              {isListening && !currentUserText && !isConnecting && (
+                <div className="flex items-center gap-3 py-3 mb-4">
+                  <div className="relative">
+                    <motion.div
+                      animate={{ scale: [1, 1.25, 1] }}
+                      transition={{ repeat: Infinity, duration: 1.8 }}
+                      className="w-10 h-10 rounded-full bg-secondary/10 absolute inset-0"
+                    />
+                    <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center relative z-10">
+                      <MicFilled size={18} className="text-white" />
+                    </div>
                   </div>
-                  {/* Agent response */}
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Sparkles size={14} className="text-white" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-primary font-medium text-sm leading-relaxed">{turn.agentText}</p>
-                    </div>
+                  <div className="flex-1">
+                    <p className="font-headline font-extrabold text-sm text-primary">
+                      {turns.length === 0 ? "Listening..." : "Listening for your next question..."}
+                    </p>
+                    {turns.length === 0 && (
+                      <p className="text-on-surface-variant text-xs mt-0.5">Ask about flights, upgrades, miles, or baggage</p>
+                    )}
+                  </div>
+                  {/* Volume bars */}
+                  <div className="flex gap-0.5 items-end h-5 mr-2">
+                    {[...Array(4)].map((_, i) => (
+                      <motion.div
+                        key={i}
+                        animate={{ height: Math.max(4, volume * (6 + i * 6)) }}
+                        transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                        className="w-1 bg-secondary rounded-full"
+                      />
+                    ))}
                   </div>
                 </div>
-              ))}
+              )}
 
-              {/* Current user text (while processing) */}
+              {/* ── Conversation History with Structured Cards ── */}
+              {turns.map((turn) => {
+                const card = parseResponseToCard(turn.agentText);
+                return (
+                  <div key={turn.id} className="mb-6">
+                    {/* User said */}
+                    <div className="mb-2">
+                      <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
+                      <p className="text-primary font-medium text-lg italic">"{turn.userText}"</p>
+                    </div>
+
+                    {/* Agent headline */}
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
+                        <Sparkles size={14} className="text-white" />
+                      </div>
+                      <h2 className="text-xl font-headline font-extrabold text-primary tracking-tight">
+                        {card.headline || turn.agentText.split('.')[0] + '.'}
+                      </h2>
+                    </div>
+
+                    {/* ─ Flight Card ─ */}
+                    {card.type === "flight" && card.flight && (
+                      <div className="bg-primary text-white rounded-2xl p-5 shadow-xl border-l-4 border-secondary relative overflow-hidden mb-4">
+                        {/* Background plane icon */}
+                        <div className="absolute top-0 right-0 p-4 opacity-10">
+                          <Plane size={56} />
+                        </div>
+                        <div className="relative z-10">
+                          {/* Top Match badge */}
+                          <span className="text-[10px] font-black uppercase tracking-[0.2em] bg-secondary px-2 py-1 rounded-sm inline-block mb-3">
+                            Top Match
+                          </span>
+                          {/* Route display */}
+                          <div className="flex items-center gap-4 mb-4">
+                            <div>
+                              <p className="text-2xl font-black">{card.flight.from}</p>
+                              <p className="text-[10px] opacity-70">{card.flight.depTime}</p>
+                            </div>
+                            <div className="flex flex-col items-center flex-1 px-2">
+                              <span className="text-[10px] opacity-60 font-bold mb-1">{card.flight.number}</span>
+                              <div className="w-full h-px bg-white/30 relative">
+                                <Plane size={12} className="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-secondary" />
+                              </div>
+                              {card.flight.duration && (
+                                <span className="text-[10px] opacity-60 mt-1">{card.flight.duration}</span>
+                              )}
+                            </div>
+                            <div className="text-right">
+                              <p className="text-2xl font-black">{card.flight.to}</p>
+                              <p className="text-[10px] opacity-70">{card.flight.arrTime}</p>
+                            </div>
+                          </div>
+                          {/* Price + CTA */}
+                          {card.flight.price && (
+                            <div className="flex items-center justify-between pt-4 border-t border-white/10">
+                              <div>
+                                <span className="text-[10px] opacity-60 uppercase font-bold tracking-wider">Starting at</span>
+                                <p className="text-2xl font-black text-primary-fixed-dim">{card.flight.price}</p>
+                              </div>
+                              <button className="bg-white text-primary px-5 py-2 rounded-lg font-bold text-sm shadow-lg hover:bg-surface-variant transition-colors">
+                                Select Flight
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ─ Miles / Loyalty Card ─ */}
+                    {card.type === "miles" && card.miles && (
+                      <div className="bg-primary-container rounded-2xl p-5 mb-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Star size={16} className="text-primary-fixed-dim" />
+                          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-primary-container opacity-80">SkyMiles Medallion</span>
+                        </div>
+                        {card.miles.balance !== "---" && (
+                          <p className="text-3xl font-black text-white mb-1">{card.miles.balance} <span className="text-base font-bold opacity-80">Miles</span></p>
+                        )}
+                        {card.miles.tier && (
+                          <p className="text-sm text-on-primary-container opacity-80 font-medium">{card.miles.tier}</p>
+                        )}
+                        {!card.miles.balance || card.miles.balance === "---" ? (
+                          <p className="text-sm text-on-primary-container/80 font-medium leading-relaxed">{turn.agentText}</p>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {/* ─ Upgrade Card ─ */}
+                    {card.type === "upgrade" && card.upgrade && (
+                      <div className="bg-surface-container-high rounded-2xl p-5 border-l-4 border-secondary mb-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <ArrowUpCircle size={18} className="text-secondary" />
+                          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">Upgrade</span>
+                        </div>
+                        <p className="text-lg font-bold text-primary mb-1">{card.upgrade.cabin}</p>
+                        {card.upgrade.seat && (
+                          <p className="text-sm text-on-surface-variant">Seat {card.upgrade.seat}</p>
+                        )}
+                        {card.upgrade.cost && (
+                          <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ─ Baggage Card ─ */}
+                    {card.type === "baggage" && (
+                      <div className="bg-surface-container-high rounded-2xl p-5 mb-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Luggage size={18} className="text-primary" />
+                          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">Baggage</span>
+                        </div>
+                        <p className="text-sm text-on-surface font-medium leading-relaxed">{turn.agentText}</p>
+                      </div>
+                    )}
+
+                    {/* ─ Generic response (no special card) ─ */}
+                    {card.type === "generic" && !card.headline && (
+                      <div className="pl-11">
+                        <p className="text-primary font-medium text-sm leading-relaxed">{turn.agentText}</p>
+                      </div>
+                    )}
+
+                    {/* Quick-action chips */}
+                    {card.chips.length > 0 && (
+                      <div className="flex gap-2 overflow-x-auto pb-1 mt-3 scrollbar-hide">
+                        {card.chips.map((chip) => (
+                          <button
+                            key={chip}
+                            className="whitespace-nowrap px-4 py-2 rounded-full border border-primary/20 text-primary text-xs font-bold hover:bg-primary/5 transition-colors flex-shrink-0"
+                          >
+                            {chip}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* ── Current user text (while processing) ── */}
               {currentUserText && (
                 <div className="mb-4">
                   <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
-                  <p className="text-primary font-medium text-base italic">"{currentUserText}"</p>
-                  <div className="flex items-center gap-2 mt-2">
+                  <p className="text-primary font-medium text-lg italic">"{currentUserText}"</p>
+                  <div className="flex items-center gap-2 mt-3">
                     <div className="flex gap-1">
                       {[0, 1, 2].map(i => (
                         <motion.div
@@ -445,56 +708,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         />
                       ))}
                     </div>
-                    <p className="text-on-surface-variant text-xs">{status}</p>
+                    <p className="text-on-surface-variant text-xs font-medium">{status}</p>
                   </div>
-                </div>
-              )}
-
-              {/* Listening Indicator */}
-              {isListening && !currentUserText && turns.length === 0 && !isConnecting && (
-                <div className="flex flex-col items-center py-12 gap-6">
-                  <div className="relative">
-                    <motion.div
-                      animate={{ scale: [1, 1.3, 1] }}
-                      transition={{ repeat: Infinity, duration: 2 }}
-                      className="w-24 h-24 rounded-full bg-secondary/10 absolute inset-0"
-                    />
-                    <div className="w-24 h-24 rounded-full bg-primary flex items-center justify-center relative z-10">
-                      <MicFilled size={36} className="text-white" />
-                    </div>
-                    {/* Volume bars */}
-                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 flex gap-0.5 items-end h-4">
-                      {[...Array(5)].map((_, i) => (
-                        <motion.div
-                          key={i}
-                          animate={{ height: Math.max(3, volume * (4 + i * 5)) }}
-                          transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                          className="w-1 bg-secondary rounded-full"
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="text-center">
-                    <p className="font-headline font-extrabold text-lg text-primary">Listening...</p>
-                    <p className="text-on-surface-variant text-xs mt-1">Ask about flights, upgrades, miles, or baggage</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Listening after initial conversation */}
-              {isListening && !currentUserText && turns.length > 0 && (
-                <div className="flex items-center gap-3 py-4 border-t border-outline-variant/20 mt-4">
-                  <div className="flex gap-0.5 items-end h-5">
-                    {[...Array(4)].map((_, i) => (
-                      <motion.div
-                        key={i}
-                        animate={{ height: Math.max(4, volume * (6 + i * 6)) }}
-                        transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                        className="w-1 bg-primary rounded-full"
-                      />
-                    ))}
-                  </div>
-                  <p className="text-on-surface-variant text-sm font-medium">Listening for your next question...</p>
                 </div>
               )}
 
