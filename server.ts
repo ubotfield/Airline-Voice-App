@@ -1141,6 +1141,8 @@ let demoPersona = {
   customerName: process.env.DEMO_CUSTOMER_NAME || "Marcus Johnson",
   customerPhone: process.env.DEMO_CUSTOMER_PHONE || "555-0100",
   customerEmail: process.env.DEMO_CUSTOMER_EMAIL || "marcus.johnson@example.com",
+  skymilesNumber: process.env.DEMO_SKYMILES_NUMBER || "1234567890",
+  pnr: process.env.DEMO_PNR || "GHTK92",
 };
 
 app.get("/api/demo-persona", async (_req, res) => {
@@ -1149,15 +1151,19 @@ app.get("/api/demo-persona", async (_req, res) => {
     customerName: demoPersona.customerName,
     customerPhone: demoPersona.customerPhone,
     customerEmail: demoPersona.customerEmail,
+    skymilesNumber: demoPersona.skymilesNumber,
+    pnr: demoPersona.pnr,
     isConfigured: !!(demoPersona.customerName && demoPersona.customerPhone),
   });
 });
 
 app.put("/api/demo-persona", async (req, res) => {
-  const { customerName, customerPhone, customerEmail } = req.body;
+  const { customerName, customerPhone, customerEmail, skymilesNumber, pnr } = req.body;
   if (customerName !== undefined) demoPersona.customerName = customerName || "";
   if (customerPhone !== undefined) demoPersona.customerPhone = customerPhone || "";
   if (customerEmail !== undefined) demoPersona.customerEmail = customerEmail || "";
+  if (skymilesNumber !== undefined) demoPersona.skymilesNumber = skymilesNumber || "";
+  if (pnr !== undefined) demoPersona.pnr = pnr || "";
   console.log("[demo-persona] Updated:", demoPersona);
   res.json({ success: true, action: "updated", id: "local" });
 });

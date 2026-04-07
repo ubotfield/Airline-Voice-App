@@ -53,6 +53,14 @@ export class AgentforceSession {
         parts.push(`my email is ${persona.customerEmail}`);
         this.personaVarsCache.push({ name: "CustomerEmail", type: "Text", value: persona.customerEmail });
       }
+      if (persona.skymilesNumber) {
+        parts.push(`my SkyMiles number is ${persona.skymilesNumber}`);
+        this.personaVarsCache.push({ name: "SkyMilesNumber", type: "Text", value: persona.skymilesNumber });
+      }
+      if (persona.pnr) {
+        parts.push(`my booking confirmation/PNR is ${persona.pnr}`);
+        this.personaVarsCache.push({ name: "PNR", type: "Text", value: persona.pnr });
+      }
       if (parts.length > 0) {
         this.personaContext = `[Customer info — do not ask again: ${parts.join(", ")}. This is a voice conversation — keep responses natural and conversational, around 2-3 sentences. Avoid repeating details the customer already heard earlier in the conversation.] `;
       }

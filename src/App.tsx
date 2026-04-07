@@ -15,6 +15,7 @@ type Tab = 'home' | 'trips' | 'boardingpass' | 'checkin' | 'skymiles' | 'profile
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
+  const [voiceOpen, setVoiceOpen] = useState(false);
 
   const renderContent = () => {
     switch (activeTab) {
@@ -88,8 +89,11 @@ function AppContent() {
         </AnimatePresence>
       </main>
 
-      {/* Voice Assistant — self-contained overlay */}
-      <VoiceAssistant />
+      {/* Voice Assistant — triggered from bottom nav */}
+      <VoiceAssistant
+        isOpen={voiceOpen}
+        onToggle={() => setVoiceOpen(false)}
+      />
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pb-8 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl border-t border-outline-variant/20 shadow-[0_-4px_20px_rgba(0,27,60,0.08)]">
@@ -103,13 +107,15 @@ function AppContent() {
           <button
             key={tab.id}
             onClick={() => {
-              if (tab.id !== 'assistant') {
+              if (tab.id === 'assistant') {
+                setVoiceOpen(v => !v);
+              } else {
                 setActiveTab(tab.id as Tab);
               }
             }}
             className={`flex flex-col items-center justify-center px-3 py-1 transition-all duration-300 ${
               tab.isSpecial
-                ? 'text-secondary scale-110 font-bold'
+                ? `text-secondary scale-110 font-bold ${voiceOpen ? 'animate-pulse' : ''}`
                 : activeNavTab === tab.id
                   ? 'text-primary-dim'
                   : 'text-on-surface-variant hover:text-primary-dim'

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, Save, Trash2, User, Phone, Mail, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Save, Trash2, User, Phone, Mail, Star, Ticket, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { apiUrl } from '../lib/api-base';
 
 interface PersonalInfoProps {
@@ -12,6 +12,8 @@ interface DemoPersona {
   customerName: string;
   customerPhone: string;
   customerEmail: string;
+  skymilesNumber: string;
+  pnr: string;
   isConfigured: boolean;
 }
 
@@ -19,6 +21,8 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
+  const [skymilesNumber, setSkymilesNumber] = useState('');
+  const [pnr, setPnr] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -42,6 +46,8 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
         setName(data.customerName);
         setPhone(data.customerPhone);
         setEmail(data.customerEmail);
+        setSkymilesNumber(data.skymilesNumber || '');
+        setPnr(data.pnr || '');
       }
     } catch (err) {
       console.error('Failed to load persona:', err);
@@ -56,7 +62,13 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
       const res = await fetch(apiUrl('/api/demo-persona'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customerName: name, customerPhone: phone, customerEmail: email }),
+        body: JSON.stringify({
+          customerName: name,
+          customerPhone: phone,
+          customerEmail: email,
+          skymilesNumber,
+          pnr,
+        }),
       });
       if (res.ok) {
         setToast({ type: 'success', message: 'Saved! Agent will use this info.' });
@@ -76,12 +88,20 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
       const res = await fetch(apiUrl('/api/demo-persona'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customerName: '', customerPhone: '', customerEmail: '' }),
+        body: JSON.stringify({
+          customerName: '',
+          customerPhone: '',
+          customerEmail: '',
+          skymilesNumber: '',
+          pnr: '',
+        }),
       });
       if (res.ok) {
         setName('');
         setPhone('');
         setEmail('');
+        setSkymilesNumber('');
+        setPnr('');
         setToast({ type: 'success', message: 'Cleared! Agent will ask the customer.' });
       }
     } catch {
@@ -132,7 +152,7 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Scott Anderson"
+            placeholder="e.g. Marcus Johnson"
             className="w-full bg-surface-container-high rounded-xl px-5 py-4 text-on-surface font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
           />
         </div>
@@ -145,7 +165,7 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
             type="tel"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
-            placeholder="e.g. 4159943410"
+            placeholder="e.g. 4045551234"
             className="w-full bg-surface-container-high rounded-xl px-5 py-4 text-on-surface font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
           />
         </div>
@@ -158,7 +178,33 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="e.g. scott@freshkitchens.com"
+            placeholder="e.g. marcus.johnson@email.com"
+            className="w-full bg-surface-container-high rounded-xl px-5 py-4 text-on-surface font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm font-bold text-on-surface/60 uppercase tracking-widest">
+            <Star size={16} /> SkyMiles Number
+          </label>
+          <input
+            type="text"
+            value={skymilesNumber}
+            onChange={(e) => setSkymilesNumber(e.target.value)}
+            placeholder="e.g. 1234567890"
+            className="w-full bg-surface-container-high rounded-xl px-5 py-4 text-on-surface font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm font-bold text-on-surface/60 uppercase tracking-widest">
+            <Ticket size={16} /> Booking PNR
+          </label>
+          <input
+            type="text"
+            value={pnr}
+            onChange={(e) => setPnr(e.target.value)}
+            placeholder="e.g. GHTK92"
             className="w-full bg-surface-container-high rounded-xl px-5 py-4 text-on-surface font-medium placeholder:text-on-surface/30 outline-none focus:ring-2 focus:ring-primary/40 transition-all"
           />
         </div>
@@ -176,7 +222,7 @@ export const PersonalInfo: React.FC<PersonalInfoProps> = ({ onBack }) => {
         </button>
         <button
           onClick={handleClear}
-          disabled={saving || (!name && !phone && !email)}
+          disabled={saving || (!name && !phone && !email && !skymilesNumber && !pnr)}
           className="flex items-center justify-center gap-2 bg-surface-container-high text-on-surface/70 rounded-xl px-6 py-4 font-headline font-bold text-lg hover:bg-error/10 hover:text-error transition-all disabled:opacity-30"
         >
           <Trash2 size={20} />

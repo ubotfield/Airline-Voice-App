@@ -18,6 +18,8 @@ import { useNotifications, parseAgentResponse } from "../lib/notifications";
  */
 
 interface VoiceAssistantProps {
+  isOpen?: boolean;
+  onToggle?: () => void;
   onOrderPlaced?: (order: any) => void;
 }
 
@@ -28,6 +30,8 @@ interface ConversationTurn {
 }
 
 export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
+  isOpen = false,
+  onToggle,
   onOrderPlaced,
 }) => {
   const [isActive, setIsActive] = useState(false);
@@ -67,6 +71,23 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     return () => { cancelled = true; };
   }, []);
 
+  // ─── Respond to external isOpen prop ────────────────────────
+  const prevIsOpenRef = useRef(isOpen);
+  useEffect(() => {
+    if (isOpen && !prevIsOpenRef.current) {
+      // External open request — start the assistant
+      if (!isActive && !isConnecting && !hasError) {
+        toggleAssistant();
+      }
+    } else if (!isOpen && prevIsOpenRef.current) {
+      // External close request — stop the assistant
+      if (isActive || isConnecting || hasError) {
+        toggleAssistant();
+      }
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen]);
+
   const toggleAssistant = async () => {
     if (isActive || hasError || isConnecting) {
       // ─── Stop ─────────────────────────────────────────────
@@ -86,6 +107,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
       try { native?.disconnect(); } catch { /* ignore */ }
       try { agent?.end(); } catch { /* ignore */ }
+
+      // Notify parent to sync state
+      onToggle?.();
     } else {
       // ─── Start ────────────────────────────────────────────
       setIsConnecting(true);
@@ -331,28 +355,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
   return (
     <>
-      {/* Floating Mic Button */}
-      <AnimatePresence>
-        {!showOverlay && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.8 }}
-            className="fixed bottom-32 right-6 z-50"
-          >
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={toggleAssistant}
-              disabled={isConnecting}
-              className="relative w-20 h-20 rounded-full flex items-center justify-center shadow-2xl bg-primary text-on-primary"
-            >
-              <Mic size={32} />
-            </motion.button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Full-Screen Bottom Sheet Overlay */}
       <AnimatePresence>
         {showOverlay && (

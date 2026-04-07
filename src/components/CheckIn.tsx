@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Plane, Plus, Minus, Info, ChevronRight, CheckCircle } from 'lucide-react';
+import { Plane, Plus, Minus, Info, ChevronRight, CheckCircle, Mic } from 'lucide-react';
 
 type CheckInStep = 'flight' | 'bags' | 'review';
 
@@ -18,6 +18,26 @@ export const CheckIn: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Voice Interaction Banner */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-primary-container text-white p-5 rounded-2xl shadow-xl flex items-center gap-5 border-b-4 border-secondary"
+      >
+        <div className="flex-shrink-0 w-12 h-12 bg-secondary rounded-full flex items-center justify-center animate-pulse">
+          <Mic size={20} className="text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/70">Delta Assistant</span>
+            <CheckCircle size={12} className="text-white/70" />
+          </div>
+          <p className="font-headline text-base font-bold leading-tight">
+            "I've started your check-in for flight DL 204."
+          </p>
+        </div>
+      </motion.div>
+
       {/* Progress Steps */}
       <nav className="flex justify-between items-center border-b border-outline-variant/20 pb-4">
         {steps.map((step) => (
@@ -168,7 +188,7 @@ export const CheckIn: React.FC = () => {
         </div>
 
         {/* Summary Sidebar */}
-        <aside className="lg:col-span-4">
+        <aside className="lg:col-span-4 space-y-6">
           <div className="bg-surface-container-lowest rounded-xl p-6 sticky top-24 shadow-sm border border-outline-variant/10">
             <h3 className="font-headline text-lg font-extrabold text-primary mb-5">Journey Summary</h3>
             <div className="space-y-3 mb-6">
@@ -196,6 +216,19 @@ export const CheckIn: React.FC = () => {
             <p className="text-[10px] text-center text-on-surface-variant mt-5 px-2 uppercase tracking-tighter leading-tight">
               By clicking complete, you agree to the hazardous materials regulations and Delta's contract of carriage.
             </p>
+          </div>
+
+          {/* Upgrade Available Card */}
+          <div className="rounded-xl overflow-hidden h-48 relative">
+            <img
+              alt="Delta Aircraft Wing"
+              className="w-full h-full object-cover"
+              src="https://lh3.googleusercontent.com/aida-public/AB6AXuBykWOAlcrkHEK-b0MWM37DElzj3xZgUkyVKdDiFF8ugWm7DeaYh6P-fkqf7Wwb9QxCYfMJCo63wDj9IWt4LKfrLxGEPclngEvm5FnOJOIy4-kRIo6LnE9SQplYHXh7AfHggl9_UqwW97a-lzNQu3eq4WVWPZQHt6Wkzt01xyPU6MiZ4vaJDvxklAqmA9k5bRZbq_G_iN-3JTEF1676xl1kg9D2HZWbdXJV9yfoI6lWdZY5qoUzHo0ILCgTB4E2PA9srDJi74wYUkZi"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-primary/80 to-transparent flex flex-col justify-end p-6">
+              <span className="text-white text-xs font-bold uppercase tracking-widest mb-1">Upgrade Available</span>
+              <p className="text-white font-headline text-sm font-bold">First Class starting at 5,000 miles</p>
+            </div>
           </div>
         </aside>
       </div>

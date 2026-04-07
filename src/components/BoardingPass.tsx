@@ -59,18 +59,12 @@ export const BoardingPass: React.FC = () => {
         <div className="px-8 py-10 flex flex-col items-center bg-white border-t border-b border-dashed border-outline-variant/30">
           <div className="mb-8 flex flex-col items-center">
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant mb-4">Scan at Gate</p>
-            <div className="bg-white p-3 border border-outline-variant/30 rounded-lg shadow-sm">
-              {/* QR Code Placeholder */}
-              <div className="w-48 h-48 bg-primary/5 rounded flex items-center justify-center relative overflow-hidden">
-                <div className="grid grid-cols-8 gap-[2px] p-4">
-                  {Array.from({ length: 64 }).map((_, i) => (
-                    <div
-                      key={i}
-                      className={`w-4 h-4 rounded-sm ${Math.random() > 0.45 ? 'bg-primary' : 'bg-transparent'}`}
-                    />
-                  ))}
-                </div>
-              </div>
+            <div className="bg-white p-2 border border-outline-variant/30 rounded-lg shadow-sm">
+              <img
+                alt="Boarding Pass QR Code"
+                className="w-48 h-48"
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuDPIXtW25MUw0ddBb-R1iLfeUGjjyCbbsuyH_qQXB3UZdECzG6gAzWsx8WKMNmmXYLCbkucRc11WdeVHTDOjgYzi2B50s4uP8MFUc6ElG6DX7goGH1372MNeGKHntdaSmcOPvNW4o9fQIHw1Savi8FAyWCHz1qtwKY_ZpT86Dsd8XNv-Z18g026WS_KT80fjpZE-KQHRAkhJ2N0fDyk8vlMfcHpWrL1qLK7EkZVP3P7XxjJHMjlHXvSA2eltrklDOSnbEsNMXgaH5L_"
+              />
             </div>
             <p className="mt-4 font-mono text-[10px] text-on-surface-variant tracking-widest">ETKT 0062408315201</p>
           </div>
@@ -78,11 +72,11 @@ export const BoardingPass: React.FC = () => {
           <div className="flex justify-between w-full gap-3">
             <div className="flex-1 bg-surface-container-low p-3 rounded-lg text-center">
               <p className="text-on-surface-variant text-[10px] font-bold uppercase mb-1">Status</p>
-              <p className="text-secondary font-headline font-extrabold text-sm tracking-tight">GOLD</p>
+              <p className="text-secondary font-headline font-extrabold text-sm tracking-tight">SKY PRIORITY</p>
             </div>
             <div className="flex-1 bg-surface-container-low p-3 rounded-lg text-center">
               <p className="text-on-surface-variant text-[10px] font-bold uppercase mb-1">Zone</p>
-              <p className="text-primary font-headline font-extrabold text-sm uppercase">Zone 2</p>
+              <p className="text-primary font-headline font-extrabold text-sm uppercase">Zone 1</p>
             </div>
             <div className="flex-1 bg-surface-container-low p-3 rounded-lg text-center">
               <p className="text-on-surface-variant text-[10px] font-bold uppercase mb-1">Cabin</p>
