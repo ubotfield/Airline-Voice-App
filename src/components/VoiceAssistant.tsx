@@ -260,9 +260,41 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             try {
               if (agentRef.current?.isActive) {
                 setStatus("Getting greeting...");
-                const { response: greeting, audioData } = await agentRef.current.sendMessageWithAudio("Hello");
-                if (!agentRef.current?.isActive) return;
-                await nativeRef.current?.sendGreetingWithAudio(greeting, audioData);
+
+                // #6: Use streaming for greeting — audio starts playing as first sentence arrives
+                // instead of waiting for full agent response + full TTS synthesis (~2-4s faster)
+                try {
+                  let greetingText = "";
+                  let streamingWorked = false;
+
+                  await nativeRef.current?.startStreamingPlayback();
+
+                  const { response } = await agentRef.current.sendMessageFullStreaming("Hello", {
+                    onTextChunk: () => { setStatus("Speaking..."); },
+                    onTextComplete: (fullText) => { greetingText = fullText; },
+                    onAudioChunk: (pcmBase64) => {
+                      nativeRef.current?.addStreamingChunk(pcmBase64);
+                      streamingWorked = true;
+                    },
+                    onDone: (fullText) => { greetingText = fullText || greetingText; },
+                    onError: (error) => { console.warn("[voice] Greeting stream error:", error); },
+                  });
+
+                  greetingText = response || greetingText;
+
+                  if (streamingWorked) {
+                    await nativeRef.current?.finishStreamingPlayback();
+                  }
+
+                  if (!agentRef.current?.isActive) return;
+                  // Signal greeting complete — native voice will resume listening
+                  await nativeRef.current?.sendGreeting(greetingText ? "" : "");
+                } catch (streamErr) {
+                  console.warn("[voice] Greeting streaming failed, trying sync:", streamErr);
+                  const { response: greeting, audioData } = await agentRef.current.sendMessageWithAudio("Hello");
+                  if (!agentRef.current?.isActive) return;
+                  await nativeRef.current?.sendGreetingWithAudio(greeting, audioData);
+                }
                 setStatus("Listening...");
               }
             } catch (err) {

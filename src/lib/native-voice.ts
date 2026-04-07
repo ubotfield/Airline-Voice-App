@@ -74,7 +74,7 @@ export class NativeVoiceService {
   private silenceStartTime: number | null = null;
   private speechDetected = false;
   private static readonly SILENCE_THRESHOLD = 0.02; // Volume below this = silence
-  private static readonly SILENCE_DURATION_MS = 500; // Stop after 500ms of silence (tuned for speed)
+  private static readonly SILENCE_DURATION_MS = 250; // #11: Reduced from 500ms — faster turn-taking
   private static readonly MAX_RECORD_DURATION_MS = 8000; // Hard cap at 8s
   private static readonly MIN_SPEECH_DURATION_MS = 300; // Minimum speech before stopping
 
@@ -326,7 +326,7 @@ export class NativeVoiceService {
   private restartRecognition(attempt: number = 1): void {
     if (this.sttMode !== "speech-recognition") { this.startRecordingChunk(); return; }
     const MAX_ATTEMPTS = 5;
-    const delay = attempt === 1 ? 300 : attempt <= 3 ? 500 : 1000;
+    const delay = attempt === 1 ? 100 : attempt <= 3 ? 300 : 800; // #5: Reduced restart delays
 
     setTimeout(() => {
       if (!this.shouldRestart || !this._isConnected) return;
@@ -657,11 +657,10 @@ export class NativeVoiceService {
 
   private scheduleNextChunk(): void {
     if (!this.shouldRestart || !this._isConnected) return;
-    setTimeout(() => {
-      if (this.shouldRestart && this._isConnected && this.pipelineState === "idle") {
-        this.startRecordingChunk();
-      }
-    }, 150);
+    // #5: Removed 150ms delay — start next chunk immediately
+    if (this.pipelineState === "idle") {
+      this.startRecordingChunk();
+    }
   }
 
   private async transcribeAndRoute(blob: Blob, mimeType: string): Promise<void> {
@@ -763,7 +762,7 @@ export class NativeVoiceService {
       await this.speakText(greetingResponse);
     }
 
-    await new Promise(r => setTimeout(r, 200));
+    // #5: Removed 200ms post-greeting delay
     this.greetingDone = true;
     this.pipelineState = "idle";
 
@@ -790,7 +789,7 @@ export class NativeVoiceService {
 
     await this.speakText(greetingResponse);
 
-    await new Promise(r => setTimeout(r, 200));
+    // #5: Removed 200ms post-greeting delay
     this.greetingDone = true;
     this.pipelineState = "idle";
 
@@ -831,6 +830,13 @@ export class NativeVoiceService {
   }
 
   private async refreshMicStream(): Promise<void> {
+    // #7: Skip getUserMedia if existing track is still live — saves ~50-200ms per turn
+    const existingTrack = this.mediaStream?.getAudioTracks()?.[0];
+    if (existingTrack && existingTrack.readyState === "live" && existingTrack.enabled) {
+      dbg("refreshMicStream: existing track still live, skipping getUserMedia");
+      return;
+    }
+
     try {
       const newStream = await Promise.race([
         navigator.mediaDevices.getUserMedia({
@@ -905,9 +911,8 @@ export class NativeVoiceService {
           if (!this._isConnected) return;
           if (!audioAlreadyPlayed && this.bargeInTriggered) {
             dbg("Barge-in: skipping post-playback delay, resuming immediately");
-          } else if (!audioAlreadyPlayed) {
-            await new Promise(r => setTimeout(r, 150));
           }
+          // #5: Removed 150ms post-playback delay — resume listening immediately
           this.shouldRestart = true;
           await this.resumeListening();
         } else {
@@ -922,7 +927,7 @@ export class NativeVoiceService {
       try { if (this._isConnected) await this.speakText("I'm sorry, I had trouble with that. Could you say it again?"); } catch { /* ignore */ }
       if (this._isConnected) {
         this.shouldRestart = true;
-        await new Promise(r => setTimeout(r, 150));
+        // #5: Removed 150ms error-recovery delay
         await this.resumeListening();
       }
     } finally {
@@ -1015,16 +1020,15 @@ export class NativeVoiceService {
 
     // If nothing is playing and queue is empty, we're done
     if (!this.streamingDraining && this.streamingAudioQueue.length === 0) {
-      // Add a small delay to let the last audio buffer finish playing through speakers
-      // before recognition resumes (prevents speaker echo triggering recognition)
-      return new Promise(r => setTimeout(r, 300));
+      // #5: Reduced from 300ms to 80ms — just enough to avoid speaker echo
+      return new Promise(r => setTimeout(r, 80));
     }
 
     // Wait for the drain loop to finish playing all remaining chunks
     return new Promise<void>((resolve) => {
       this.streamingResolve = () => {
-        // Small delay after last chunk finishes to avoid speaker echo
-        setTimeout(resolve, 300);
+        // #5: Reduced from 300ms to 80ms
+        setTimeout(resolve, 80);
       };
       // If drain loop isn't running but there are queued chunks, kick it off
       if (!this.streamingDraining && this.streamingAudioQueue.length > 0) {

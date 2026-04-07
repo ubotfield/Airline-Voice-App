@@ -7,6 +7,9 @@ import WebSocket from "ws";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// #10: Connection pooling — Node 24's built-in fetch() uses undici internally
+// which maintains a connection pool with keep-alive by default. No extra agent needed.
+
 dotenv.config({ path: ".env.local" });
 dotenv.config();
 
@@ -415,11 +418,15 @@ app.post("/api/agent/speak-stream", async (req, res) => {
   }
 });
 
-// ─── V5: True Streaming Agent + Sentence-by-Sentence TTS ─────────────────
-// Uses /messages/stream (real SSE from Agentforce) instead of ?sync=true.
-// Text chunks arrive word-by-word; we buffer into sentences and fire TTS
-// for each sentence as soon as it's complete. Audio plays while agent is
-// still generating the rest of the response.
+// ─── V6: Parallel TTS + Eager First-Fragment + Thinking Filler ─────────────
+// Changes from V5:
+//   #1: Parallel TTS — sentences TTS'd concurrently, tagged with sentenceIndex
+//       for client-side ordered playback (saves ~1-3s per turn)
+//   #2: Eager first-fragment — fires TTS on first comma/semicolon if >10 chars
+//       or after 5+ words (saves ~500-1500ms to first audio)
+//   #3: Thinking filler — pre-cached "One moment" audio sent immediately
+//       (saves ~1-2s perceived latency)
+//   #9: Timing instrumentation — logs firstTextChunkTime, firstAudioSentTime, total
 app.post("/api/agent/message-stream", async (req, res) => {
   const { sessionId, message, sequenceId, variables } = req.body;
   if (!sessionId || !message || !sequenceId) {
@@ -435,7 +442,16 @@ app.post("/api/agent/message-stream", async (req, res) => {
 
   try {
     const totalStart = Date.now();
+    let firstTextChunkTime = 0;
+    let firstAudioSentTime = 0;
     console.log(`[msg-stream] Starting streaming for session ${sessionId}`);
+
+    // #3: Send thinking filler audio immediately (if cached)
+    if (thinkingFillerAudio) {
+      res.write(`data: ${JSON.stringify({ type: "audio", chunk: thinkingFillerAudio, index: 0, sentenceIndex: -1 })}\n\n`);
+      firstAudioSentTime = Date.now() - totalStart;
+      console.log(`[msg-stream] Thinking filler sent at +${firstAudioSentTime}ms`);
+    }
 
     // POST to /messages/stream — the real Agentforce SSE endpoint
     const { accessToken } = await getAccessToken();
@@ -458,7 +474,6 @@ app.post("/api/agent/message-stream", async (req, res) => {
     if (!sfRes.ok) {
       const err = await sfRes.text();
       console.error("[msg-stream] Agent stream failed:", sfRes.status, err);
-      // Fall back to sync mode
       res.write(`data: ${JSON.stringify({ type: "fallback", reason: `Agent stream ${sfRes.status}` })}\n\n`);
       return await handleSyncFallback(res, sessionId, message, sequenceId, variables, totalStart);
     }
@@ -476,14 +491,17 @@ app.post("/api/agent/message-stream", async (req, res) => {
     let sentenceBuffer = "";
     let fullText = "";
     let sentenceIndex = 0;
-    let ttsChain: Promise<void> = Promise.resolve(); // Sequential TTS chain
+    let wordCount = 0;
+    let firstFragmentFired = false;
+    const ttsPromises: Promise<void>[] = []; // #1: Parallel — collect all promises
 
-    // Helper: queue streaming TTS for a sentence (sequential — each waits for previous)
+    // #1: Fire TTS in parallel (no sequential chain). Client buffers by sentenceIndex.
     const fireTtsForSentence = (sentence: string, sIdx: number) => {
       if (!sentence.trim() || !process.env.GEMINI_API_KEY) return;
       const normalizedSentence = normalizeTtsText(sentence);
-      ttsChain = ttsChain.then(async () => {
+      const ttsPromise = (async () => {
         try {
+          const ttsStart = Date.now();
           const model = "gemini-2.5-flash-preview-tts";
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
           const ttsRes = await fetch(url, {
@@ -518,19 +536,21 @@ app.post("/api/agent/message-stream", async (req, res) => {
                   const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
                   if (audioB64) {
                     chunkIdx++;
+                    if (!firstAudioSentTime) firstAudioSentTime = Date.now() - totalStart;
                     res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: sIdx })}\n\n`);
                   }
                 } catch { /* skip */ }
               }
             }
-            console.log(`[msg-stream] TTS sentence ${sIdx}: ${chunkIdx} audio chunks`);
+            console.log(`[msg-stream] TTS sentence ${sIdx}: ${chunkIdx} chunks in ${Date.now() - ttsStart}ms`);
           } else {
             console.warn(`[msg-stream] TTS failed for sentence ${sIdx}: ${ttsRes.status}`);
           }
         } catch (err: any) {
           console.warn(`[msg-stream] TTS error sentence ${sIdx}:`, err.message);
         }
-      });
+      })();
+      ttsPromises.push(ttsPromise);
     };
 
     // Parse Agentforce SSE events
@@ -544,9 +564,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
 
       for (const line of lines) {
         if (!line.trim() || line.startsWith(":")) continue;
-
-        // Handle "event: TEXT_CHUNK" — the event type line
-        if (line.startsWith("event:")) continue; // We parse from the data line
+        if (line.startsWith("event:")) continue;
 
         if (line.startsWith("data: ")) {
           const jsonStr = line.slice(6).trim();
@@ -558,26 +576,55 @@ app.post("/api/agent/message-stream", async (req, res) => {
 
             if (msgType === "TextChunk") {
               const chunkText = parsed.message?.message || "";
+              if (!firstTextChunkTime) firstTextChunkTime = Date.now() - totalStart;
               fullText += chunkText;
               sentenceBuffer += chunkText;
+              wordCount += (chunkText.match(/\s+/g) || []).length;
 
               // Forward text chunk to client for UI updates
               res.write(`data: ${JSON.stringify({ type: "text-chunk", text: chunkText, fullText })}\n\n`);
 
-              // Check for complete sentence
+              // #2: Eager first-fragment — fire TTS on first comma/semicolon if >10 chars or 5+ words
+              if (!firstFragmentFired) {
+                const eagerMatch = sentenceBuffer.match(/^(.{10,}?[,;:])\s*/s);
+                const hasEnoughWords = wordCount >= 5 && sentenceBuffer.length > 10;
+                if (eagerMatch) {
+                  const fragment = eagerMatch[1].trim();
+                  sentenceBuffer = sentenceBuffer.slice(eagerMatch[0].length);
+                  console.log(`[msg-stream] Eager fragment ${sentenceIndex}: "${fragment.substring(0, 60)}..."`);
+                  fireTtsForSentence(fragment, sentenceIndex);
+                  sentenceIndex++;
+                  firstFragmentFired = true;
+                  wordCount = 0;
+                } else if (hasEnoughWords) {
+                  // Fire on word boundary after 5+ words
+                  const wordBoundary = sentenceBuffer.lastIndexOf(" ");
+                  if (wordBoundary > 10) {
+                    const fragment = sentenceBuffer.substring(0, wordBoundary).trim();
+                    sentenceBuffer = sentenceBuffer.substring(wordBoundary);
+                    console.log(`[msg-stream] Eager word-break ${sentenceIndex}: "${fragment.substring(0, 60)}..."`);
+                    fireTtsForSentence(fragment, sentenceIndex);
+                    sentenceIndex++;
+                    firstFragmentFired = true;
+                    wordCount = 0;
+                  }
+                }
+              }
+
+              // Check for complete sentence (standard detection)
               const sentenceMatch = sentenceBuffer.match(/^(.*?[.!?\n])\s*/s);
               if (sentenceMatch) {
                 const completeSentence = sentenceMatch[1].trim();
                 sentenceBuffer = sentenceBuffer.slice(sentenceMatch[0].length);
                 if (completeSentence.length > 0) {
                   console.log(`[msg-stream] Sentence ${sentenceIndex}: "${completeSentence.substring(0, 60)}..."`);
-                  // Fire TTS for this sentence — runs concurrently
                   fireTtsForSentence(completeSentence, sentenceIndex);
                   sentenceIndex++;
+                  firstFragmentFired = true; // After first full sentence, no longer eager
+                  wordCount = 0;
                 }
               }
             } else if (msgType === "Inform") {
-              // Full text confirmation — may contain the complete response
               const informText = parsed.message?.message || "";
               if (informText && !fullText) fullText = informText;
               res.write(`data: ${JSON.stringify({ type: "text-complete", fullText: fullText || informText })}\n\n`);
@@ -595,12 +642,13 @@ app.post("/api/agent/message-stream", async (req, res) => {
       }
     }
 
-    // Wait for all sequential TTS to finish
-    await ttsChain;
+    // #1: Wait for ALL parallel TTS calls to complete
+    await Promise.all(ttsPromises);
 
     const totalMs = Date.now() - totalStart;
-    console.log(`[msg-stream] Complete: ${totalMs}ms, ${sentenceIndex} sentences, text="${fullText.substring(0, 80)}..."`);
-    res.write(`data: ${JSON.stringify({ type: "done", fullText, totalMs, sentences: sentenceIndex })}\n\n`);
+    // #9: Timing instrumentation
+    console.log(`[msg-stream] ⏱ Complete: total=${totalMs}ms firstText=+${firstTextChunkTime}ms firstAudio=+${firstAudioSentTime}ms sentences=${sentenceIndex} text="${fullText.substring(0, 80)}..."`);
+    res.write(`data: ${JSON.stringify({ type: "done", fullText, totalMs, sentences: sentenceIndex, timing: { firstTextChunkTime, firstAudioSentTime } })}\n\n`);
     return res.end();
   } catch (err: any) {
     console.error("[msg-stream] Error:", err.message);
@@ -775,7 +823,7 @@ app.post("/api/stt", async (req, res) => {
   try {
     const sttStart = Date.now();
     const apiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -820,6 +868,54 @@ const LLM_GW_FEATURE_ID = process.env.LLM_GW_FEATURE_ID || "api-key-exploratory"
 const LLM_GW_APP_CONTEXT = process.env.LLM_GW_APP_CONTEXT || "EinsteinGPT";
 const LLM_GW_VOICE = process.env.LLM_GW_VOICE || "Kore";
 const LLM_GW_MODEL = process.env.LLM_GW_MODEL || "gemini-2.5-flash-tts";
+
+// ─── #3: Thinking filler audio — pre-generated at startup ────────
+// A short "One moment please" clip sent immediately when the user speaks,
+// filling the ~2-4s gap while Agentforce thinks. Cached as base64 PCM.
+let thinkingFillerAudio: string | null = null;
+
+async function preGenerateThinkingFiller(): Promise<void> {
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  if (!GEMINI_API_KEY) {
+    console.log("[filler] Skipping thinking filler — no GEMINI_API_KEY");
+    return;
+  }
+
+  try {
+    const model = "gemini-2.5-flash-preview-tts";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: "One moment." }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } },
+          },
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      console.warn("[filler] TTS failed:", res.status, await res.text().catch(() => ""));
+      return;
+    }
+
+    const data = await res.json();
+    const audioB64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (audioB64) {
+      thinkingFillerAudio = audioB64;
+      const sizeKB = Math.round(Buffer.from(audioB64, "base64").length / 1024);
+      console.log(`[filler] ✓ Thinking filler cached (${sizeKB}KB PCM)`);
+    } else {
+      console.warn("[filler] No audio data in response");
+    }
+  } catch (err: any) {
+    console.warn("[filler] Pre-generation failed:", err.message);
+  }
+}
 
 /** Create a 44-byte WAV header for Linear16 PCM data (24kHz, 16-bit, mono) */
 function createWavHeader(pcmByteLength: number): Buffer {
@@ -1309,4 +1405,7 @@ app.listen(PORT, () => {
   console.log(`   TTS Fallback: ${LLM_GW_API_KEY ? `LLM Gateway (${LLM_GW_VOICE} voice) ✓` : "⚠️  No LLM_GW_API_KEY — no fallback TTS"}`);
   console.log(`   TTS Tenant: ${LLM_GW_TENANT_ID ? `${LLM_GW_TENANT_ID} ✓` : "⚠️  No LLM_GW_TENANT_ID (gateway fallback disabled)"}`);
   console.log(`   STT: Web Speech API (primary) + Gemini (fallback) ${process.env.GEMINI_API_KEY ? "✓" : "⚠️  No GEMINI_API_KEY"}\n`);
+
+  // #3: Pre-generate thinking filler audio in background (non-blocking)
+  preGenerateThinkingFiller().catch(() => {});
 });

@@ -18,7 +18,7 @@ export function getApiBase(): string {
     window.location.protocol === "capacitor:";
 
   if (isCapacitor) {
-    _apiBase = "https://scotts-qsr-app-v2.herokuapp.com";
+    _apiBase = "https://delta-voice-app-v1-29f00fe87641.herokuapp.com"; // #8: Fixed — was pointing to QSR app
     console.log("[api-base] Capacitor detected, using:", _apiBase);
     return _apiBase;
   }
