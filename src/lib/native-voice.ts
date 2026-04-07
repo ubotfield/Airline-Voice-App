@@ -81,7 +81,7 @@ export class NativeVoiceService {
   private silenceStartTime: number | null = null;
   private speechDetected = false;
   private static readonly SILENCE_THRESHOLD = 0.02; // Volume below this = silence
-  private static readonly SILENCE_DURATION_MS = 250; // #11: Reduced from 500ms — faster turn-taking
+  private static readonly SILENCE_DURATION_MS = 800; // Increased from 250ms — 250 was too aggressive, cutting chunks before speech captured
   private static readonly MAX_RECORD_DURATION_MS = 8000; // Hard cap at 8s
   private static readonly MIN_SPEECH_DURATION_MS = 300; // Minimum speech before stopping
 
@@ -556,12 +556,16 @@ export class NativeVoiceService {
   // ===================================================================
 
   private static readonly CHUNK_DURATION_MS = 8000; // Hard cap (silence detection stops early)
-  private static readonly MIN_AUDIO_SIZE = 2000;
+  private static readonly MIN_AUDIO_SIZE = 500; // Reduced from 2000 — mobile codecs (audio/mp4) produce smaller blobs
 
   private startRecordingChunk(): void {
     if (!this._isConnected || !this.shouldRestart) return;
-    if (this.pipelineState !== "idle") return;
+    if (this.pipelineState !== "idle") {
+      dbg(`startRecordingChunk: skipped (state=${this.pipelineState})`);
+      return;
+    }
     this.lastRecognitionActivity = Date.now();
+    dbg(`startRecordingChunk: starting new recording chunk`);
 
     if (!this.mediaStream) {
       this.refreshMicStream().then(() => {
@@ -619,14 +623,17 @@ export class NativeVoiceService {
         const actualMime = this.mediaRecorder?.mimeType || this.supportedMimeType;
         const blob = new Blob(this.recordedChunks, { type: actualMime });
         this.recordedChunks = [];
+        dbg(`Recording stopped: ${chunkCount} chunks, blob=${blob.size}B, mime=${actualMime}, peak=${this.peakVolumeDuringChunk.toFixed(3)}`);
         if (blob.size > NativeVoiceService.MIN_AUDIO_SIZE) {
           this.pipelineState = "transcribing";
           this.transcribeAndRoute(blob, actualMime);
         } else {
+          dbg(`⚠️ Blob too small (${blob.size}B < ${NativeVoiceService.MIN_AUDIO_SIZE}B) — discarding, scheduling next chunk`);
           this.pipelineState = "idle";
           this.scheduleNextChunk();
         }
       } else {
+        dbg(`Recording stopped: no data (chunks=${chunkCount}, state=${this.pipelineState}) — recycling`);
         this.recordedChunks = [];
         if (this.pipelineState === "recording") {
           this.pipelineState = "idle";
@@ -818,11 +825,15 @@ export class NativeVoiceService {
     if (!this.shouldRestart || !this._isConnected) return;
     // #5: Removed 150ms delay — start next chunk immediately
     if (this.pipelineState === "idle") {
+      dbg(`scheduleNextChunk: cycling → startRecordingChunk`);
       this.startRecordingChunk();
+    } else {
+      dbg(`scheduleNextChunk: skipped (state=${this.pipelineState})`);
     }
   }
 
   private async transcribeAndRoute(blob: Blob, mimeType: string): Promise<void> {
+    dbg(`transcribeAndRoute: sending ${blob.size}B audio (${mimeType}) to server STT`);
     this.clearPipelineSafety();
     this.pipelineSafetyTimer = window.setTimeout(() => {
       dbg("⚠️ Pipeline stuck 45s — force reset");
@@ -849,10 +860,12 @@ export class NativeVoiceService {
 
       const data = await res.json();
       const text = data.text?.trim();
+      dbg(`STT response: "${text || "(empty)"}"`);
       if (text && text.length > 0) {
         this.callbacks.onStatusChange?.("Processing...");
         await this.routeToAgent(text);
       } else {
+        dbg(`STT returned empty — recycling to next chunk`);
         this.pipelineState = "idle";
         this.scheduleNextChunk();
       }

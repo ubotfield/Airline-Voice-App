@@ -295,7 +295,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   }
 
                   if (!agentRef.current?.isActive) return;
-                  await nativeRef.current?.sendGreeting(greetingText ? "" : "");
+                  // Greeting audio already played via streaming above — just resume listening
+                  await nativeRef.current?.sendGreeting("");
                 } catch (streamErr) {
                   console.warn("[voice] Greeting streaming failed, trying sync:", streamErr);
                   const { response: greeting, audioData } = await agentRef.current.sendMessageWithAudio("Hello");
