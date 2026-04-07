@@ -4,8 +4,6 @@ export class AgentforceSession {
   private sessionId: string | null = null;
   private sequenceId: number = 0;
   private variablesSent: boolean = false;
-  private contextPrepended: boolean = false;
-  private personaContext: string = "";
   private personaVarsCache: Array<{ name: string; type: string; value: string }> = [];
 
   get isActive(): boolean {
@@ -22,8 +20,6 @@ export class AgentforceSession {
     this.sessionId = data.sessionId;
     this.sequenceId = 0;
     this.variablesSent = false;
-    this.contextPrepended = false;
-    this.personaContext = "";
     this.personaVarsCache = [];
 
     // Pre-fetch persona so it's ready for every message
@@ -31,8 +27,9 @@ export class AgentforceSession {
   }
 
   /**
-   * Loads persona data once and caches it for the session.
-   * The context string is prepended to EVERY message so the agent never re-asks.
+   * Loads persona data once and caches it as structured variables.
+   * Context is passed ONLY via the Agentforce variables array (not prepended to messages)
+   * so the planner can cleanly identify the user's intent.
    */
   private async loadPersona(): Promise<void> {
     try {
@@ -40,29 +37,20 @@ export class AgentforceSession {
       if (!res.ok) return;
       const persona = await res.json();
 
-      const parts: string[] = [];
       if (persona.customerName) {
-        parts.push(`my name is ${persona.customerName}`);
         this.personaVarsCache.push({ name: "CustomerName", type: "Text", value: persona.customerName });
       }
       if (persona.customerPhone) {
-        parts.push(`my phone number is ${persona.customerPhone}`);
         this.personaVarsCache.push({ name: "CustomerPhone", type: "Text", value: persona.customerPhone });
       }
       if (persona.customerEmail) {
-        parts.push(`my email is ${persona.customerEmail}`);
         this.personaVarsCache.push({ name: "CustomerEmail", type: "Text", value: persona.customerEmail });
       }
       if (persona.skymilesNumber) {
-        parts.push(`my SkyMiles number is ${persona.skymilesNumber}`);
         this.personaVarsCache.push({ name: "SkyMilesNumber", type: "Text", value: persona.skymilesNumber });
       }
       if (persona.pnr) {
-        parts.push(`my booking confirmation/PNR is ${persona.pnr}`);
         this.personaVarsCache.push({ name: "PNR", type: "Text", value: persona.pnr });
-      }
-      if (parts.length > 0) {
-        this.personaContext = `[Customer info — do not ask again: ${parts.join(", ")}. This is a voice conversation — keep responses natural and conversational, around 2-3 sentences. Avoid repeating details the customer already heard earlier in the conversation.] `;
       }
     } catch { /* ignore */ }
   }
@@ -76,17 +64,6 @@ export class AgentforceSession {
     return this.personaVarsCache;
   }
 
-  /**
-   * Prepends persona context to the message so the agent always knows
-   * the customer's name/phone/email without needing to ask.
-   * Uses its own flag (separate from variables) so both mechanisms work.
-   */
-  private enrichMessage(text: string): string {
-    if (!this.personaContext || this.contextPrepended) return text;
-    this.contextPrepended = true;
-    return this.personaContext + text;
-  }
-
   async sendMessage(text: string): Promise<string> {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
@@ -94,7 +71,7 @@ export class AgentforceSession {
     const res = await fetch(apiUrl("/api/agent/message"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: this.sessionId, message: this.enrichMessage(text), sequenceId: this.sequenceId, variables }),
+      body: JSON.stringify({ sessionId: this.sessionId, message: text, sequenceId: this.sequenceId, variables }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -115,7 +92,7 @@ export class AgentforceSession {
     const res = await fetch(apiUrl("/api/agent/speak"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: this.sessionId, message: this.enrichMessage(text), sequenceId: this.sequenceId, variables }),
+      body: JSON.stringify({ sessionId: this.sessionId, message: text, sequenceId: this.sequenceId, variables }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -160,7 +137,7 @@ export class AgentforceSession {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: this.sessionId,
-        message: this.enrichMessage(text),
+        message: text,
         sequenceId: this.sequenceId,
         variables,
       }),
@@ -240,7 +217,7 @@ export class AgentforceSession {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: this.sessionId,
-        message: this.enrichMessage(text),
+        message: text,
         sequenceId: this.sequenceId,
         variables,
       }),
