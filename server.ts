@@ -1239,7 +1239,7 @@ let demoPersona = {
   customerName: process.env.DEMO_CUSTOMER_NAME || "Marcus Johnson",
   customerPhone: process.env.DEMO_CUSTOMER_PHONE || "555-0100",
   customerEmail: process.env.DEMO_CUSTOMER_EMAIL || "marcus.johnson@example.com",
-  skymilesNumber: process.env.DEMO_SKYMILES_NUMBER || "1234567890",
+  skymilesNumber: process.env.DEMO_SKYMILES_NUMBER || "12345",
   pnr: process.env.DEMO_PNR || "GHTK92",
 };
 
