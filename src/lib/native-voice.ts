@@ -73,6 +73,9 @@ export class NativeVoiceService {
   private listeningWatchdog: number | null = null;
   private lastRecognitionActivity = 0;
 
+  // Recognition health check — detects silent hangs where start() succeeds but no events fire
+  private recognitionHealthTimer: number | null = null;
+
   // Silence detection
   private silenceDetectionInterval: number | null = null;
   private silenceStartTime: number | null = null;
@@ -266,11 +269,12 @@ export class NativeVoiceService {
       this.setupVisibilityListener();
 
       this.shouldRestart = true;
+      // Fix 1: Do NOT start recognition here — it will be started by resumeListening()
+      // after the greeting finishes. Starting it early causes conflicts when
+      // resumeListening() → restartRecognition() tries to start an already-active instance,
+      // leading to silent hangs on mobile Chrome/Safari.
       if (this.sttMode === "speech-recognition") {
-        this.setupRecognition();
-        try { this.recognition.start(); } catch (e: any) {
-          dbg(`recognition.start() failed: ${e?.message}`);
-        }
+        this.setupRecognition(); // Wire up handlers only — don't .start()
       }
 
       this._isConnected = true;
@@ -350,8 +354,9 @@ export class NativeVoiceService {
       if (!this.shouldRestart) return;
       if (this.pipelineState !== "idle") return;
 
+      // Fix 4: Reduced from 8s to 5s for faster recovery from silent hangs
       const staleDuration = Date.now() - this.lastRecognitionActivity;
-      if (staleDuration > 8000) {
+      if (staleDuration > 5000) {
         dbg(`⚠️ Listening watchdog: no activity for ${Math.round(staleDuration / 1000)}s — forcing restart`);
         this.lastRecognitionActivity = Date.now(); // prevent rapid re-triggers
 
@@ -360,8 +365,7 @@ export class NativeVoiceService {
           try { this.recognition?.stop(); } catch { /* ignore */ }
           setTimeout(() => {
             if (this._isConnected && this.shouldRestart) {
-              this.setupRecognition();
-              try { this.recognition.start(); } catch { /* ignore */ }
+              this.restartRecognition(); // Use restartRecognition for health check + fallback
             }
           }, 200);
         } else {
@@ -429,25 +433,51 @@ export class NativeVoiceService {
     const MAX_ATTEMPTS = 5;
     const delay = attempt === 1 ? 100 : attempt <= 3 ? 300 : 800; // #5: Reduced restart delays
 
+    // Clear any existing health check timer
+    if (this.recognitionHealthTimer) { clearTimeout(this.recognitionHealthTimer); this.recognitionHealthTimer = null; }
+
     setTimeout(() => {
       if (!this.shouldRestart || !this._isConnected) return;
+
+      let started = false;
 
       // First try: reuse existing recognition instance
       try {
         if (this.recognition) {
           this.recognition.start();
           dbg(`restartRecognition: started existing (attempt ${attempt})`);
-          return;
+          started = true;
         }
       } catch { /* ignore */ }
 
       // Second try: create fresh recognition instance
-      try {
-        this.setupRecognition();
-        this.recognition?.start();
-        dbg(`restartRecognition: started fresh (attempt ${attempt})`);
+      if (!started) {
+        try {
+          this.setupRecognition();
+          this.recognition?.start();
+          dbg(`restartRecognition: started fresh (attempt ${attempt})`);
+          started = true;
+        } catch { /* ignore */ }
+      }
+
+      if (started) {
+        // Fix 2: Health check — if onstart doesn't fire within 3s, recognition
+        // silently hung (common on mobile Chrome/Safari). Fall back immediately.
+        const activityBefore = this.lastRecognitionActivity;
+        this.recognitionHealthTimer = window.setTimeout(() => {
+          this.recognitionHealthTimer = null;
+          if (this.lastRecognitionActivity === activityBefore && this._isConnected && this.shouldRestart) {
+            dbg(`⚠️ Recognition health check FAILED — no onstart in 3s (attempt ${attempt}). Falling back to MediaRecorder.`);
+            try { this.recognition?.stop(); } catch { /* ignore */ }
+            this.sttMode = "media-recorder";
+            this.supportedMimeType = this.getSupportedMimeType();
+            this.callbacks.onStatusChange?.("Listening...");
+            this.pipelineState = "idle";
+            this.startRecordingChunk();
+          }
+        }, 3000);
         return;
-      } catch { /* ignore */ }
+      }
 
       // Retry if we haven't exceeded max attempts
       if (attempt < MAX_ATTEMPTS) {
@@ -949,6 +979,10 @@ export class NativeVoiceService {
     this.callbacks.onStatusChange?.("Listening...");
 
     if (this.sttMode === "speech-recognition") {
+      // Fix 3: Stop any existing recognition before restarting — prevents
+      // InvalidStateError or silent hangs when start() is called on an
+      // already-active instance (common on mobile Chrome/Safari).
+      try { this.recognition?.stop(); } catch { /* ignore */ }
       // Refresh mic stream before restarting recognition — Chrome/Safari
       // can lose the mic connection after audio playback, especially in PWA mode
       try { await this.refreshMicStream(); } catch { /* ignore */ }
@@ -1542,6 +1576,7 @@ export class NativeVoiceService {
     this.pipelineState = "idle";
 
     this.stopListeningWatchdog();
+    if (this.recognitionHealthTimer) { clearTimeout(this.recognitionHealthTimer); this.recognitionHealthTimer = null; }
     this.stopBargeInDetection();
     this.stopSilenceDetection();
     this.cancelAllPlayback();
