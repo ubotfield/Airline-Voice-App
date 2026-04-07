@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Delta Voice Agent — End-to-End Demo Guide</title>
+<script src="https://assets.meshmesh.io/system/tailwindcss-browser-4.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style type="text/tailwindcss">
+@theme {
+  --color-primary: #001e40;
+  --color-secondary: #E01933;
+  --color-accent: #003366;
+  --color-surface: #f9f9ff;
+  --color-muted: #43474f;
+  --color-light: #e7eeff;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+}
+</style>
+</head>
+<body class="bg-surface text-primary font-['Inter'] min-h-screen">
+
+<!-- Header -->
+<header class="bg-primary text-white py-8 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="flex items-center gap-3 mb-4">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="#E01933"><path d="M12 2L2 22h20L12 2z"/></svg>
+      <span class="font-['Manrope'] font-extrabold text-2xl tracking-tight uppercase">Delta</span>
+    </div>
+    <h1 class="font-['Manrope'] text-4xl font-extrabold tracking-tight mb-2">Voice Agent Demo Guide</h1>
+    <p class="text-white/60 text-lg">End-to-end walkthrough for the Agentforce-powered inline voice assistant</p>
+  </div>
+</header>
+
+<main class="max-w-4xl mx-auto px-6 py-10 space-y-12">
+
+<!-- Quick Start -->
+<section class="bg-white rounded-2xl p-8 shadow-sm border border-light">
+  <h2 class="font-['Manrope'] text-2xl font-extrabold mb-6 flex items-center gap-3">
+    <span class="w-10 h-10 rounded-full bg-secondary text-white flex items-center justify-center text-sm font-bold">▶</span>
+    Quick Start
+  </h2>
+  <div class="space-y-4 text-[15px] leading-relaxed">
+    <div class="flex items-start gap-3">
+      <span class="w-7 h-7 rounded-full bg-accent text-white flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
+      <div><strong>Open the app</strong> — Navigate to <a href="https://delta-voice-app-v1-29f00fe87641.herokuapp.com/" target="_blank" class="text-secondary font-semibold underline underline-offset-2">delta-voice-app-v1-29f00fe87641.herokuapp.com</a> in Safari (best on iPhone for PWA experience)</div>
+    </div>
+    <div class="flex items-start gap-3">
+      <span class="w-7 h-7 rounded-full bg-accent text-white flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
+      <div><strong>Add to Home Screen</strong> — Tap the Share button → "Add to Home Screen" for the full-screen native app experience</div>
+    </div>
+    <div class="flex items-start gap-3">
+      <span class="w-7 h-7 rounded-full bg-accent text-white flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
+      <div><strong>Allow microphone access</strong> — When prompted, tap "Allow" so the voice assistant can listen</div>
+    </div>
+    <div class="flex items-start gap-3">
+      <span class="w-7 h-7 rounded-full bg-accent text-white flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
+      <div><strong>Tap the Assistant button</strong> — The microphone icon in the bottom navigation bar activates the voice agent</div>
+    </div>
+  </div>
+</section>
+
+<!-- Pre-Loaded Demo Persona -->
+<section class="bg-white rounded-2xl p-8 shadow-sm border border-light">
+  <h2 class="font-['Manrope'] text-2xl font-extrabold mb-6 flex items-center gap-3">
+    <span class="w-10 h-10 rounded-full bg-accent text-white flex items-center justify-center text-sm font-bold">👤</span>
+    Demo Persona — Pre-Loaded
+  </h2>
+  <p class="text-muted mb-5">The agent already knows this customer. No need to provide these details during the demo.</p>
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div class="bg-light rounded-xl p-4">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-1">Customer Name</p>
+      <p class="text-lg font-bold">Marcus Johnson</p>
+    </div>
+    <div class="bg-light rounded-xl p-4">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-1">SkyMiles Number</p>
+      <p class="text-lg font-bold">1234567890</p>
+    </div>
+    <div class="bg-light rounded-xl p-4">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-1">Medallion Status</p>
+      <p class="text-lg font-bold">Gold Medallion</p>
+    </div>
+    <div class="bg-light rounded-xl p-4">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-1">Miles Balance</p>
+      <p class="text-lg font-bold">42,850 miles</p>
+    </div>
+    <div class="bg-light rounded-xl p-4">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-1">Default Booking (PNR)</p>
+      <p class="text-lg font-bold">GHTK92</p>
+    </div>
+    <div class="bg-light rounded-xl p-4">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-1">MQMs / MQDs</p>
+      <p class="text-lg font-bold">55,000 / $8,200</p>
+    </div>
+  </div>
+</section>
+
+<!-- Use Case 1 -->
+<section class="bg-white rounded-2xl overflow-hidden shadow-sm border border-light">
+  <div class="bg-primary text-white px-8 py-6">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="bg-secondary text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Use Case 1</span>
+      <span class="text-white/40 text-sm">Post-Travel Resolution</span>
+    </div>
+    <h2 class="font-['Manrope'] text-3xl font-extrabold tracking-tight">Missing Miles Credit</h2>
+    <p class="text-white/60 mt-2">Customer flew ATL → LAX recently and notices miles weren't credited. The agent finds the issue and credits them in real time.</p>
+  </div>
+  <div class="px-8 py-8 space-y-8">
+
+    <!-- Flight Context -->
+    <div class="bg-light rounded-xl p-5">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-3">Flight with Missing Miles</p>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div><span class="text-muted text-xs block">Flight</span><strong>DL 423</strong></div>
+        <div><span class="text-muted text-xs block">Route</span><strong>ATL → LAX</strong></div>
+        <div><span class="text-muted text-xs block">Date</span><strong>Mar 28, 2026</strong></div>
+        <div><span class="text-muted text-xs block">PNR</span><strong>GHTK92</strong></div>
+      </div>
+    </div>
+
+    <!-- Conversation Script -->
+    <div>
+      <h3 class="font-['Manrope'] font-bold text-lg mb-4 text-accent">Conversation Flow</h3>
+      <div class="space-y-4">
+
+        <div class="flex items-start gap-3">
+          <span class="w-7 h-7 rounded-full bg-primary text-white flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>
+          <div class="flex-1">
+            <p class="text-xs font-bold text-muted uppercase mb-1">Tap the Assistant button in the bottom nav</p>
+            <p class="text-muted text-sm">The voice drawer slides up and the agent greets you.</p>
+          </div>
+        </div>
+
+        <div class="bg-secondary/5 border-l-4 border-secondary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-secondary uppercase tracking-wider mb-1">You Say</p>
+          <p class="text-lg font-['Manrope'] font-bold italic">"I think I'm missing miles from a recent flight."</p>
+        </div>
+        <div class="bg-primary/5 border-l-4 border-primary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-accent uppercase tracking-wider mb-1">Agent Responds</p>
+          <p class="text-[15px] text-muted">The agent will check your recent flights and identify the ATL → LAX flight on March 28th where 2,847 miles haven't been credited yet.</p>
+        </div>
+
+        <div class="bg-secondary/5 border-l-4 border-secondary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-secondary uppercase tracking-wider mb-1">You Say</p>
+          <p class="text-lg font-['Manrope'] font-bold italic">"Yes, that's the one — the Atlanta to LA flight."</p>
+        </div>
+        <div class="bg-primary/5 border-l-4 border-primary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-accent uppercase tracking-wider mb-1">Agent Responds</p>
+          <p class="text-[15px] text-muted">The agent confirms it found the issue — a processing delay — and credits 2,847 miles to your account, bringing your new balance to approximately 45,697 miles.</p>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Alternative Prompts -->
+    <div class="bg-light rounded-xl p-5">
+      <p class="text-xs font-bold text-accent uppercase tracking-wider mb-3">Alternative Voice Prompts You Can Try</p>
+      <div class="space-y-2">
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Check if my miles were credited for my last flight"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"I flew to LA last week and didn't get my miles"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Can you credit missing miles for PNR GHTK92?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"I'm missing miles from my Atlanta to Los Angeles flight"</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- Use Case 2 -->
+<section class="bg-white rounded-2xl overflow-hidden shadow-sm border border-light">
+  <div class="bg-primary text-white px-8 py-6">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="bg-secondary text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Use Case 2</span>
+      <span class="text-white/40 text-sm">Pre-Travel Action</span>
+    </div>
+    <h2 class="font-['Manrope'] text-3xl font-extrabold tracking-tight">First Class Seat Upgrade</h2>
+    <p class="text-white/60 mt-2">Customer wants to upgrade to First Class on an upcoming ATL → JFK flight. The agent checks availability, pricing, and processes the upgrade.</p>
+  </div>
+  <div class="px-8 py-8 space-y-8">
+
+    <!-- Flight Context -->
+    <div class="bg-light rounded-xl p-5">
+      <p class="text-xs font-bold text-muted uppercase tracking-wider mb-3">Upcoming Flight</p>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div><span class="text-muted text-xs block">Flight</span><strong>DL 204</strong></div>
+        <div><span class="text-muted text-xs block">Route</span><strong>ATL → JFK</strong></div>
+        <div><span class="text-muted text-xs block">Date</span><strong>Apr 10, 2026</strong></div>
+        <div><span class="text-muted text-xs block">Current Seat</span><strong>24B (Main)</strong></div>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm mt-4 pt-4 border-t border-primary/10">
+        <div><span class="text-muted text-xs block">PNR</span><strong>WXMB33</strong></div>
+        <div><span class="text-muted text-xs block">Aircraft</span><strong>Boeing 737-900</strong></div>
+        <div><span class="text-muted text-xs block">First Class Open</span><strong class="text-success">2 seats</strong></div>
+      </div>
+    </div>
+
+    <!-- Conversation Script -->
+    <div>
+      <h3 class="font-['Manrope'] font-bold text-lg mb-4 text-accent">Conversation Flow</h3>
+      <div class="space-y-4">
+
+        <div class="flex items-start gap-3">
+          <span class="w-7 h-7 rounded-full bg-primary text-white flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>
+          <div class="flex-1">
+            <p class="text-xs font-bold text-muted uppercase mb-1">Tap the Assistant button</p>
+            <p class="text-muted text-sm">Start a new voice session (or continue from Use Case 1).</p>
+          </div>
+        </div>
+
+        <div class="bg-secondary/5 border-l-4 border-secondary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-secondary uppercase tracking-wider mb-1">You Say</p>
+          <p class="text-lg font-['Manrope'] font-bold italic">"Can I upgrade to First Class on my Atlanta to New York flight?"</p>
+        </div>
+        <div class="bg-primary/5 border-l-4 border-primary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-accent uppercase tracking-wider mb-1">Agent Responds</p>
+          <p class="text-[15px] text-muted">The agent checks upgrade eligibility and seat availability. It will report available First Class seats and pricing options: 15,000 miles + $39, or $189 cash.</p>
+        </div>
+
+        <div class="bg-secondary/5 border-l-4 border-secondary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-secondary uppercase tracking-wider mb-1">You Say</p>
+          <p class="text-lg font-['Manrope'] font-bold italic">"Yes, go ahead with the upgrade."</p>
+        </div>
+        <div class="bg-primary/5 border-l-4 border-primary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-accent uppercase tracking-wider mb-1">Agent Responds</p>
+          <p class="text-[15px] text-muted">The agent processes the seat upgrade and confirms the new First Class seat assignment on DL 204.</p>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Alternative Prompts -->
+    <div class="bg-light rounded-xl p-5">
+      <p class="text-xs font-bold text-accent uppercase tracking-wider mb-3">Alternative Voice Prompts You Can Try</p>
+      <div class="space-y-2">
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"I'd like to upgrade my seat on my next flight"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"What First Class seats are available on DL 204?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"How much does a First Class upgrade cost?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Upgrade my booking WXMB33 to First Class"</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- Use Case 3 — Loyalty Info -->
+<section class="bg-white rounded-2xl overflow-hidden shadow-sm border border-light">
+  <div class="bg-primary text-white px-8 py-6">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="bg-secondary text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Use Case 3</span>
+      <span class="text-white/40 text-sm">Account Inquiry</span>
+    </div>
+    <h2 class="font-['Manrope'] text-3xl font-extrabold tracking-tight">Loyalty Status & Miles Balance</h2>
+    <p class="text-white/60 mt-2">Customer asks about their SkyMiles balance, Medallion tier, and MQM progress.</p>
+  </div>
+  <div class="px-8 py-8 space-y-8">
+    <div>
+      <h3 class="font-['Manrope'] font-bold text-lg mb-4 text-accent">Conversation Flow</h3>
+      <div class="space-y-4">
+
+        <div class="bg-secondary/5 border-l-4 border-secondary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-secondary uppercase tracking-wider mb-1">You Say</p>
+          <p class="text-lg font-['Manrope'] font-bold italic">"What's my loyalty status and miles balance?"</p>
+        </div>
+        <div class="bg-primary/5 border-l-4 border-primary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-accent uppercase tracking-wider mb-1">Expected Agent Response</p>
+          <p class="text-[15px] text-muted">The agent returns: <strong>Gold Medallion</strong> status, <strong>42,850 miles</strong> balance, and <strong>55,000 MQMs</strong>.</p>
+        </div>
+
+      </div>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <p class="text-xs font-bold text-accent uppercase tracking-wider mb-3">Alternative Voice Prompts</p>
+      <div class="space-y-2">
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Check my miles"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"How many SkyMiles do I have?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"What's my Medallion tier?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Am I close to Platinum status?"</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Use Case 4 — Flight Status -->
+<section class="bg-white rounded-2xl overflow-hidden shadow-sm border border-light">
+  <div class="bg-primary text-white px-8 py-6">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="bg-secondary text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Use Case 4</span>
+      <span class="text-white/40 text-sm">Travel Day</span>
+    </div>
+    <h2 class="font-['Manrope'] text-3xl font-extrabold tracking-tight">Flight Status Check</h2>
+    <p class="text-white/60 mt-2">Customer asks about gate, departure time, or status of an upcoming flight.</p>
+  </div>
+  <div class="px-8 py-8 space-y-8">
+    <div>
+      <h3 class="font-['Manrope'] font-bold text-lg mb-4 text-accent">Conversation Flow</h3>
+      <div class="space-y-4">
+
+        <div class="bg-secondary/5 border-l-4 border-secondary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-secondary uppercase tracking-wider mb-1">You Say</p>
+          <p class="text-lg font-['Manrope'] font-bold italic">"What's the status of my flight to New York?"</p>
+        </div>
+        <div class="bg-primary/5 border-l-4 border-primary rounded-r-xl p-4">
+          <p class="text-xs font-bold text-accent uppercase tracking-wider mb-1">Expected Agent Response</p>
+          <p class="text-[15px] text-muted">The agent retrieves details for <strong>DL 204, ATL → JFK, April 10</strong> including departure time, gate, and current status.</p>
+        </div>
+
+      </div>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <p class="text-xs font-bold text-accent uppercase tracking-wider mb-3">Alternative Voice Prompts</p>
+      <div class="space-y-2">
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Is my flight on time?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"What gate is DL 204?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"When does my flight to JFK depart?"</div>
+        <div class="bg-white rounded-lg px-4 py-3 text-sm font-medium border border-light">"Check my flight status for April 10th"</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- All Bookings Reference -->
+<section class="bg-white rounded-2xl p-8 shadow-sm border border-light">
+  <h2 class="font-['Manrope'] text-2xl font-extrabold mb-6 flex items-center gap-3">
+    <span class="w-10 h-10 rounded-full bg-accent text-white flex items-center justify-center text-sm font-bold">✈</span>
+    Marcus Johnson's Complete Bookings
+  </h2>
+  <p class="text-muted mb-5">All bookings loaded in the demo org. You can reference any of these during the demo.</p>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-light">
+          <th class="text-left px-4 py-3 font-bold text-xs uppercase tracking-wider text-muted">Flight</th>
+          <th class="text-left px-4 py-3 font-bold text-xs uppercase tracking-wider text-muted">Route</th>
+          <th class="text-left px-4 py-3 font-bold text-xs uppercase tracking-wider text-muted">Date</th>
+          <th class="text-left px-4 py-3 font-bold text-xs uppercase tracking-wider text-muted">PNR</th>
+          <th class="text-left px-4 py-3 font-bold text-xs uppercase tracking-wider text-muted">Cabin</th>
+          <th class="text-left px-4 py-3 font-bold text-xs uppercase tracking-wider text-muted">Seat</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-light">
+        <tr>
+          <td class="px-4 py-3 font-bold">DL 567</td>
+          <td class="px-4 py-3">JFK → SFO</td>
+          <td class="px-4 py-3">Feb 20, 2026</td>
+          <td class="px-4 py-3 font-mono text-xs">JFKSF2</td>
+          <td class="px-4 py-3">First Class</td>
+          <td class="px-4 py-3">3A</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-3 font-bold">DL 1872</td>
+          <td class="px-4 py-3">ATL → ORD</td>
+          <td class="px-4 py-3">Mar 15, 2026</td>
+          <td class="px-4 py-3 font-mono text-xs">GKXYZ1</td>
+          <td class="px-4 py-3">Main Cabin</td>
+          <td class="px-4 py-3">8B</td>
+        </tr>
+        <tr class="bg-warning/5">
+          <td class="px-4 py-3 font-bold">DL 423 ⭐</td>
+          <td class="px-4 py-3">ATL → LAX</td>
+          <td class="px-4 py-3">Mar 28, 2026</td>
+          <td class="px-4 py-3 font-mono text-xs">GHTK92</td>
+          <td class="px-4 py-3">Main Cabin</td>
+          <td class="px-4 py-3">14C</td>
+        </tr>
+        <tr class="bg-success/5">
+          <td class="px-4 py-3 font-bold">DL 204 ⭐</td>
+          <td class="px-4 py-3">ATL → JFK</td>
+          <td class="px-4 py-3">Apr 10, 2026</td>
+          <td class="px-4 py-3 font-mono text-xs">WXMB33</td>
+          <td class="px-4 py-3">First Class</td>
+          <td class="px-4 py-3">2A</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="flex gap-4 mt-4 text-xs text-muted">
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-warning/20 border border-warning/30"></span> Use Case 1 — Missing Miles</span>
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-success/20 border border-success/30"></span> Use Case 2 — Seat Upgrade</span>
+  </div>
+</section>
+
+<!-- Tips -->
+<section class="bg-white rounded-2xl p-8 shadow-sm border border-light">
+  <h2 class="font-['Manrope'] text-2xl font-extrabold mb-6 flex items-center gap-3">
+    <span class="w-10 h-10 rounded-full bg-warning text-white flex items-center justify-center text-sm font-bold">💡</span>
+    Demo Tips
+  </h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+    <div class="bg-light rounded-xl p-5">
+      <h4 class="font-bold mb-2">Speak Naturally</h4>
+      <p class="text-sm text-muted">The agent uses natural language understanding. You don't need to use exact phrases — conversational speech works great.</p>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <h4 class="font-bold mb-2">Wait for the Pulse</h4>
+      <p class="text-sm text-muted">The microphone icon pulses when the agent is listening. Start speaking when you see the animated waveform.</p>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <h4 class="font-bold mb-2">Chain Use Cases</h4>
+      <p class="text-sm text-muted">Run Use Cases sequentially for the best flow — start with loyalty check, then missing miles, then seat upgrade.</p>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <h4 class="font-bold mb-2">Quiet Environment</h4>
+      <p class="text-sm text-muted">For best voice recognition, demo in a quiet room. The agent processes speech-to-text before sending to Agentforce.</p>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <h4 class="font-bold mb-2">Change Demo Persona</h4>
+      <p class="text-sm text-muted">Go to More → Personal Info to change the customer name, SkyMiles number, or PNR for different demo scenarios.</p>
+    </div>
+    <div class="bg-light rounded-xl p-5">
+      <h4 class="font-bold mb-2">Browser Tabs Work Too</h4>
+      <p class="text-sm text-muted">The app works in desktop Chrome/Safari as well. The PWA home screen experience is best for mobile demos.</p>
+    </div>
+  </div>
+</section>
+
+<!-- App Screens -->
+<section class="bg-white rounded-2xl p-8 shadow-sm border border-light">
+  <h2 class="font-['Manrope'] text-2xl font-extrabold mb-6 flex items-center gap-3">
+    <span class="w-10 h-10 rounded-full bg-primary text-white flex items-center justify-center text-sm font-bold">📱</span>
+    App Screens to Explore
+  </h2>
+  <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+    <div class="bg-light rounded-xl p-5 text-center">
+      <p class="text-2xl mb-2">🏠</p>
+      <h4 class="font-bold text-sm">Home</h4>
+      <p class="text-xs text-muted mt-1">Flight status, weather, quick actions, explore destinations</p>
+    </div>
+    <div class="bg-light rounded-xl p-5 text-center">
+      <p class="text-2xl mb-2">✈️</p>
+      <h4 class="font-bold text-sm">My Trips</h4>
+      <p class="text-xs text-muted mt-1">Upcoming & past flights with check-in and boarding pass access</p>
+    </div>
+    <div class="bg-light rounded-xl p-5 text-center">
+      <p class="text-2xl mb-2">🎫</p>
+      <h4 class="font-bold text-sm">Boarding Pass</h4>
+      <p class="text-xs text-muted mt-1">Digital boarding pass with QR code, gate, seat, and status</p>
+    </div>
+    <div class="bg-light rounded-xl p-5 text-center">
+      <p class="text-2xl mb-2">✅</p>
+      <h4 class="font-bold text-sm">Check-In</h4>
+      <p class="text-xs text-muted mt-1">Bag selection, seat confirmation, SkyPriority benefits</p>
+    </div>
+    <div class="bg-light rounded-xl p-5 text-center">
+      <p class="text-2xl mb-2">⭐</p>
+      <h4 class="font-bold text-sm">SkyMiles</h4>
+      <p class="text-xs text-muted mt-1">Miles balance, Medallion progress, recent activity</p>
+    </div>
+    <div class="bg-light rounded-xl p-5 text-center">
+      <p class="text-2xl mb-2">🎙️</p>
+      <h4 class="font-bold text-sm">Voice Assistant</h4>
+      <p class="text-xs text-muted mt-1">Agentforce-powered voice agent with real-time TTS responses</p>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section class="bg-white rounded-2xl p-8 shadow-sm border border-light">
+  <h2 class="font-['Manrope'] text-2xl font-extrabold mb-6 flex items-center gap-3">
+    <span class="w-10 h-10 rounded-full bg-accent text-white flex items-center justify-center text-sm font-bold">⚡</span>
+    How It Works
+  </h2>
+  <div class="space-y-4 text-[15px] text-muted leading-relaxed">
+    <div class="flex items-start gap-4">
+      <div class="w-10 h-10 rounded-xl bg-light flex items-center justify-center flex-shrink-0 font-bold text-primary">1</div>
+      <div><strong class="text-primary">Voice Input</strong> — User speaks into the app. Browser-native speech recognition converts voice to text in real time.</div>
+    </div>
+    <div class="flex items-start gap-4">
+      <div class="w-10 h-10 rounded-xl bg-light flex items-center justify-center flex-shrink-0 font-bold text-primary">2</div>
+      <div><strong class="text-primary">Agentforce Agent</strong> — The text is sent to a Salesforce Agentforce agent via the Agent API. The agent has 3 topics (Loyalty, Flight Info, Seat Upgrades) backed by 8 Apex actions.</div>
+    </div>
+    <div class="flex items-start gap-4">
+      <div class="w-10 h-10 rounded-xl bg-light flex items-center justify-center flex-shrink-0 font-bold text-primary">3</div>
+      <div><strong class="text-primary">Salesforce Data</strong> — Apex actions query live Salesforce objects — Loyalty Management (members, tiers, currencies) and custom Flight/Booking/Seat Map objects.</div>
+    </div>
+    <div class="flex items-start gap-4">
+      <div class="w-10 h-10 rounded-xl bg-light flex items-center justify-center flex-shrink-0 font-bold text-primary">4</div>
+      <div><strong class="text-primary">Voice Response</strong> — The agent's text response is streamed through Google Gemini TTS for natural voice output. The user hears the response spoken aloud.</div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- Footer -->
+<footer class="bg-primary text-white/40 text-center py-8 text-sm">
+  <p>Delta Voice Agent Demo · Built with Agentforce + Salesforce Loyalty Management</p>
+  <p class="mt-1">Version 1.0 · April 2026</p>
+</footer>
+
+</body>
+</html>

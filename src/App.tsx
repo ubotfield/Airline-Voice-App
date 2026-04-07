@@ -17,11 +17,12 @@ type Tab = 'home' | 'trips' | 'boardingpass' | 'checkin' | 'skymiles' | 'profile
 function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceResult, setVoiceResult] = useState<{ userText: string; agentText: string } | null>(null);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
-        return <Home onNavigate={(tab: string) => setActiveTab(tab as Tab)} />;
+        return <Home onNavigate={(tab: string) => setActiveTab(tab as Tab)} voiceResult={voiceResult} onDismissVoiceResult={() => setVoiceResult(null)} />;
       case 'trips':
         return (
           <Trips
@@ -94,6 +95,7 @@ function AppContent() {
       <VoiceAssistant
         isOpen={voiceOpen}
         onToggle={() => setVoiceOpen(false)}
+        onVoiceResult={(result) => setVoiceResult(result)}
       />
 
       {/* Bottom Navigation */}

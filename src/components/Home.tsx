@@ -1,10 +1,12 @@
 import React from 'react';
-import { motion } from 'motion/react';
-import { ArrowRight, Plane, Star, Clock, Shield } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { ArrowRight, Plane, Star, Clock, Shield, X, CheckCircle, Mic } from 'lucide-react';
 import { MicFilled } from './icons/MicFilled';
 
 interface HomeProps {
   onNavigate: (tab: string) => void;
+  voiceResult?: { userText: string; agentText: string } | null;
+  onDismissVoiceResult?: () => void;
 }
 
 function getGreeting(): string {
@@ -14,7 +16,54 @@ function getGreeting(): string {
   return 'Good Evening';
 }
 
-export const Home: React.FC<HomeProps> = ({ onNavigate }) => {
+/** Extract key results from agent text for the Voice Request Processed card */
+function extractVoiceResults(agentText: string): Array<{ icon: 'check' | 'seat' | 'miles' | 'flight'; label: string; value: string }> {
+  const results: Array<{ icon: 'check' | 'seat' | 'miles' | 'flight'; label: string; value: string }> = [];
+  const lower = agentText.toLowerCase();
+
+  // Miles/points detection
+  const milesMatch = agentText.match(/([\d,]+)\s*miles/i);
+  if (milesMatch) {
+    results.push({ icon: 'check', label: 'Loyalty Points', value: `${milesMatch[1]} Miles` });
+  }
+
+  // Tier detection
+  const tierMatch = agentText.match(/(gold|silver|platinum|diamond)\s*medallion/i);
+  if (tierMatch) {
+    results.push({ icon: 'miles', label: 'Medallion Status', value: tierMatch[0] });
+  }
+
+  // Seat detection
+  const seatMatch = agentText.match(/seat\s*(\w{2,4})/i);
+  if (seatMatch) {
+    results.push({ icon: 'seat', label: 'Seat Update', value: `Updated to ${seatMatch[1]}` });
+  }
+
+  // Flight detection
+  const flightMatch = agentText.match(/DL\s*\d+/i);
+  if (flightMatch) {
+    results.push({ icon: 'flight', label: 'Flight', value: flightMatch[0] });
+  }
+
+  // Gate detection
+  const gateMatch = agentText.match(/gate\s*(\w+)/i);
+  if (gateMatch) {
+    results.push({ icon: 'check', label: 'Gate Info', value: `Gate ${gateMatch[1]}` });
+  }
+
+  // If nothing specific, show a generic result
+  if (results.length === 0) {
+    // Take first sentence as summary
+    const firstSentence = agentText.split(/[.!?]/)[0]?.trim();
+    if (firstSentence) {
+      results.push({ icon: 'check', label: 'Response', value: firstSentence.substring(0, 60) + (firstSentence.length > 60 ? '...' : '') });
+    }
+  }
+
+  return results.slice(0, 2); // Max 2 items for the card
+}
+
+export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVoiceResult }) => {
   return (
     <div className="space-y-8">
       {/* Hero: Upcoming Flight Card */}
@@ -94,6 +143,50 @@ export const Home: React.FC<HomeProps> = ({ onNavigate }) => {
           </div>
         </motion.div>
       </section>
+
+      {/* ── Voice Request Processed Card ── */}
+      <AnimatePresence>
+        {voiceResult && (
+          <motion.div
+            initial={{ y: 60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 60, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            className="bg-primary text-white rounded-2xl p-6 shadow-2xl border-l-4 border-secondary"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-secondary rounded-full p-2 flex items-center justify-center animate-pulse">
+                  <Mic size={18} className="text-white" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-on-primary-container">Voice Request Processed</p>
+                  <h3 className="font-headline font-extrabold text-base italic">"{voiceResult.userText}"</h3>
+                </div>
+              </div>
+              <button
+                onClick={onDismissVoiceResult}
+                className="text-white/60 hover:text-white transition-colors p-1"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {extractVoiceResults(voiceResult.agentText).map((item, idx) => (
+                <div key={idx} className="bg-white/10 rounded-xl p-4 flex items-center gap-4 border border-white/10">
+                  <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center text-green-400 flex-shrink-0">
+                    <CheckCircle size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-white/50 tracking-wider">{item.label}</p>
+                    <p className="text-base font-bold">{item.value}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Quick Action Cards */}
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

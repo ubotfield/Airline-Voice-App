@@ -339,6 +339,7 @@ app.post("/api/agent/speak-stream", async (req, res) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
             contents: [{ parts: [{ text: responseText }] }],
             generationConfig: {
               responseModalities: ["AUDIO"],
@@ -510,6 +511,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
               contents: [{ parts: [{ text: normalizedSentence }] }],
               generationConfig: {
                 responseModalities: ["AUDIO"],
@@ -705,6 +707,7 @@ async function handleSyncFallback(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
           contents: [{ parts: [{ text: responseText }] }],
           generationConfig: {
             responseModalities: ["AUDIO"],
@@ -870,6 +873,9 @@ const LLM_GW_FEATURE_ID = process.env.LLM_GW_FEATURE_ID || "api-key-exploratory"
 const LLM_GW_APP_CONTEXT = process.env.LLM_GW_APP_CONTEXT || "EinsteinGPT";
 const LLM_GW_VOICE = process.env.LLM_GW_VOICE || "Kore";
 const LLM_GW_MODEL = process.env.LLM_GW_MODEL || "gemini-2.5-flash-tts";
+
+// System instruction for TTS — prevents Gemini from adding vocal fillers
+const TTS_SYSTEM_INSTRUCTION = "Read this text exactly as written in a clear, professional tone. You are a Delta Air Lines customer service agent. Do not add filler words, sighs, gasps, laughter, or emotional vocalizations like 'oh', 'ah', 'hmm', 'uh', or 'ooh'. Simply read the text naturally and professionally.";
 
 // ─── #3: Thinking filler audio — pre-generated at startup ────────
 // A short "One moment please" clip sent immediately when the user speaks,
@@ -1072,6 +1078,14 @@ function closeGatewayCircuit(): void {
  * Converts dollar amounts, order numbers, and other patterns to spoken form.
  */
 function normalizeTtsText(text: string): string {
+  // Strip markdown-style formatting that causes weird TTS
+  text = text.replace(/\*\*(.*?)\*\*/g, "$1"); // **bold** → bold
+  text = text.replace(/\*(.*?)\*/g, "$1");      // *italic* → italic
+  text = text.replace(/#{1,3}\s*/g, "");         // ### heading → heading
+
+  // Strip emoji and special unicode characters that cause odd vocalizations
+  text = text.replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, "");
+
   // Convert dollar amounts: $12.02 → "12 dollars and 2 cents", $5.00 → "5 dollars"
   text = text.replace(/\$(\d+)\.(\d{2})/g, (_match, dollars, cents) => {
     const d = parseInt(dollars, 10);
@@ -1108,6 +1122,7 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
         contents: [{ parts: [{ text }] }],
         generationConfig: {
           responseModalities: ["AUDIO"],

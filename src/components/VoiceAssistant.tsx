@@ -32,10 +32,33 @@ interface ParsedCard {
 function parseResponseToCard(text: string): ParsedCard {
   const lower = text.toLowerCase();
 
-  // Flight info detection
+  // Common matchers used by multiple card types
+  const priceMatch = text.match(/\$(\d[\d,]*)/);
+  const milesMatch = text.match(/([\d,]+)\s*miles/i);
+
+  // ─── Miles / loyalty detection (BEFORE flight — prevents "missing miles" being shown as flight) ───
+  const tierMatch = text.match(/(gold|silver|platinum|diamond)\s*medallion/i);
+  const isMilesContext = milesMatch || tierMatch ||
+    lower.includes("skymiles") || lower.includes("loyalty") ||
+    lower.includes("membership") || lower.includes("missing miles") ||
+    lower.includes("miles credited") || lower.includes("mileage") ||
+    (lower.includes("account") && lower.includes("miles"));
+  if (isMilesContext) {
+    return {
+      type: "miles",
+      headline: milesMatch ? "Your SkyMiles balance." : "Your loyalty status.",
+      miles: {
+        balance: milesMatch?.[1] || "---",
+        tier: tierMatch?.[1] ? `${tierMatch[1]} Medallion` : "",
+        progress: "",
+      },
+      chips: ["Earn more miles", "Redeem miles", "Recent activity"],
+    };
+  }
+
+  // ─── Flight info detection ───
   const flightMatch = text.match(/DL\s*\d+/i);
   const routeMatch = text.match(/(\b[A-Z]{3})\b.*?(?:to|→|->)\s*(\b[A-Z]{3})\b/i);
-  const priceMatch = text.match(/\$(\d[\d,]*)/);
   const timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/gi);
   const durationMatch = text.match(/(\d+h\s*\d+m|\d+\s*hour)/i);
   const gateMatch = text.match(/gate\s*(\w+)/i);
@@ -67,22 +90,6 @@ function parseResponseToCard(text: string): ParsedCard {
         price: priceMatch ? `$${priceMatch[1]}` : "",
       },
       chips,
-    };
-  }
-
-  // Miles / loyalty detection
-  const milesMatch = text.match(/([\d,]+)\s*miles/i);
-  const tierMatch = text.match(/(gold|silver|platinum|diamond)\s*medallion/i);
-  if (milesMatch || tierMatch || (lower.includes("skymiles") || lower.includes("loyalty"))) {
-    return {
-      type: "miles",
-      headline: milesMatch ? "Your SkyMiles balance." : "Your loyalty status.",
-      miles: {
-        balance: milesMatch?.[1] || "---",
-        tier: tierMatch?.[1] ? `${tierMatch[1]} Medallion` : "",
-        progress: "",
-      },
-      chips: ["Earn more miles", "Redeem miles", "Recent activity"],
     };
   }
 
@@ -129,6 +136,7 @@ interface VoiceAssistantProps {
   isOpen?: boolean;
   onToggle?: () => void;
   onOrderPlaced?: (order: any) => void;
+  onVoiceResult?: (result: { userText: string; agentText: string }) => void;
 }
 
 interface ConversationTurn {
@@ -141,6 +149,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   isOpen = false,
   onToggle,
   onOrderPlaced,
+  onVoiceResult,
 }) => {
   const [isActive, setIsActive] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -196,12 +205,14 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
   const toggleAssistant = async () => {
     if (isActive || hasError || isConnecting) {
-      // ─── Stop ─────────────────────────────────────────────
+      // ─── Stop — UI state FIRST for immediate visual feedback ────
+      // Capture refs before clearing so cleanup runs in background
       const native = nativeRef.current;
       const agent = agentRef.current;
       nativeRef.current = null;
       agentRef.current = null;
 
+      // Set UI state IMMEDIATELY — sheet disappears instantly
       setIsActive(false);
       setIsListening(false);
       setIsConnecting(false);
@@ -211,8 +222,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       setStatus("Listening...");
       setCurrentUserText("");
 
-      try { native?.disconnect(); } catch { /* ignore */ }
-      try { agent?.end(); } catch { /* ignore */ }
+      // Fire-and-forget cleanup — don't block the UI
+      setTimeout(() => {
+        try { native?.disconnect(); } catch { /* ignore */ }
+        try { agent?.end(); } catch { /* ignore */ }
+      }, 0);
 
       onToggle?.();
     } else {
@@ -403,6 +417,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               const turnId = `turn-${++turnCounter.current}`;
               setTurns(prev => [...prev, { id: turnId, userText, agentText: response }]);
               setCurrentUserText("");
+
+              // Emit voice result for home screen animation
+              onVoiceResult?.({ userText, agentText: response });
 
               // Push cascading notification
               const notif = parseAgentResponse(response);
