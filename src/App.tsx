@@ -2,22 +2,47 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Home as HomeIcon, Plane, Mic, Star, MoreHorizontal } from 'lucide-react';
 import { Home } from './components/Home';
+import { Trips } from './components/Trips';
+import { BoardingPass } from './components/BoardingPass';
+import { CheckIn } from './components/CheckIn';
+import { SkyMiles } from './components/SkyMiles';
 import { Profile } from './components/Profile';
 import { VoiceAssistant } from './components/VoiceAssistant';
+import { NotificationStack } from './components/NotificationStack';
+import { NotificationProvider } from './lib/notifications';
 
-type Tab = 'home' | 'trips' | 'skymiles' | 'profile';
+type Tab = 'home' | 'trips' | 'boardingpass' | 'checkin' | 'skymiles' | 'profile';
 
-export default function App() {
+function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'home': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
-      case 'trips': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
-      case 'skymiles': return <Home onNavigate={(tab: Tab) => setActiveTab(tab)} />;
-      case 'profile': return <Profile />;
+      case 'home':
+        return <Home onNavigate={(tab: string) => setActiveTab(tab as Tab)} />;
+      case 'trips':
+        return (
+          <Trips
+            onViewBoardingPass={() => setActiveTab('boardingpass')}
+            onCheckIn={() => setActiveTab('checkin')}
+          />
+        );
+      case 'boardingpass':
+        return <BoardingPass />;
+      case 'checkin':
+        return <CheckIn />;
+      case 'skymiles':
+        return <SkyMiles />;
+      case 'profile':
+        return <Profile />;
     }
   };
+
+  // Map sub-pages to their parent tab for bottom nav highlighting
+  const activeNavTab = (() => {
+    if (activeTab === 'boardingpass' || activeTab === 'checkin') return 'trips';
+    return activeTab;
+  })();
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">
@@ -47,6 +72,9 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-grow pt-24 pb-32 px-6 max-w-5xl mx-auto w-full">
+        {/* Cascading Notification Stack */}
+        <NotificationStack />
+
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -60,7 +88,7 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Voice Assistant — self-contained: mic button + inline popup bar */}
+      {/* Voice Assistant — self-contained overlay */}
       <VoiceAssistant />
 
       {/* Bottom Navigation */}
@@ -82,12 +110,12 @@ export default function App() {
             className={`flex flex-col items-center justify-center px-3 py-1 transition-all duration-300 ${
               tab.isSpecial
                 ? 'text-secondary scale-110 font-bold'
-                : activeTab === tab.id
+                : activeNavTab === tab.id
                   ? 'text-primary-dim'
                   : 'text-on-surface-variant hover:text-primary-dim'
             }`}
           >
-            <tab.icon size={tab.isSpecial ? 28 : 22} fill={tab.isSpecial ? "currentColor" : activeTab === tab.id ? "currentColor" : "none"} />
+            <tab.icon size={tab.isSpecial ? 28 : 22} fill={tab.isSpecial ? "currentColor" : activeNavTab === tab.id ? "currentColor" : "none"} />
             <span className="font-body font-medium text-[10px] tracking-wide mt-1">
               {tab.label}
             </span>
@@ -95,5 +123,13 @@ export default function App() {
         ))}
       </nav>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <NotificationProvider>
+      <AppContent />
+    </NotificationProvider>
   );
 }

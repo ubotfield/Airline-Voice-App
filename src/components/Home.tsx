@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { ArrowRight, Plane, Star, Clock, Shield } from 'lucide-react';
 
 interface HomeProps {
-  onNavigate: (tab: 'home' | 'trips' | 'skymiles' | 'profile') => void;
+  onNavigate: (tab: string) => void;
 }
 
 function getGreeting(): string {
@@ -58,7 +58,10 @@ export const Home: React.FC<HomeProps> = ({ onNavigate }) => {
           </div>
 
           <div className="relative z-10">
-            <button className="w-full bg-secondary text-on-secondary py-4 rounded-md font-bold text-base hover:brightness-110 active:scale-[0.98] transition-all shadow-lg shadow-secondary/20">
+            <button
+              onClick={() => onNavigate('checkin')}
+              className="w-full bg-secondary text-on-secondary py-4 rounded-md font-bold text-base hover:brightness-110 active:scale-[0.98] transition-all shadow-lg shadow-secondary/20"
+            >
               Check In
             </button>
           </div>
