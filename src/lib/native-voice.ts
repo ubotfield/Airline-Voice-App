@@ -833,7 +833,7 @@ export class NativeVoiceService {
   }
 
   private async transcribeAndRoute(blob: Blob, mimeType: string): Promise<void> {
-    dbg(`transcribeAndRoute: sending ${blob.size}B audio (${mimeType}) to server STT`);
+    dbg(`transcribeAndRoute: sending ${blob.size}B audio (${mimeType.split(";")[0]}) to server STT`);
     this.clearPipelineSafety();
     this.pipelineSafetyTimer = window.setTimeout(() => {
       dbg("⚠️ Pipeline stuck 45s — force reset");
@@ -853,6 +853,8 @@ export class NativeVoiceService {
       });
 
       if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        dbg("⚠️ STT server error: HTTP " + res.status + " — " + errBody.substring(0, 200));
         this.pipelineState = "idle";
         this.scheduleNextChunk();
         return;
@@ -876,7 +878,8 @@ export class NativeVoiceService {
         this.pipelineState = "idle";
         this.scheduleNextChunk();
       }
-    } catch {
+    } catch (sttErr: any) {
+      dbg("⚠️ STT fetch failed: " + (sttErr?.message || String(sttErr)));
       this.pipelineState = "idle";
       this.scheduleNextChunk();
     } finally {
