@@ -36,6 +36,29 @@ function parseResponseToCard(text: string): ParsedCard {
   const priceMatch = text.match(/\$(\d[\d,]*)/);
   const milesMatch = text.match(/([\d,]+)\s*miles/i);
 
+  // ─── Upgrade detection (BEFORE miles — upgrade prompts often mention "SkyMiles"/"membership") ───
+  const isUpgradeContext = lower.includes("upgrade") ||
+    lower.includes("first class") || lower.includes("delta one") ||
+    lower.includes("comfort+") || lower.includes("premium select");
+  if (isUpgradeContext) {
+    const cabinMatch = text.match(/(first class|delta one|comfort\+|premium select)/i);
+    const seatMatch = text.match(/seat\s*(\w+)/i);
+    return {
+      type: "upgrade",
+      headline: lower.includes("confirmed") || lower.includes("complete")
+        ? "Your upgrade is confirmed!"
+        : lower.includes("provide") || lower.includes("need")
+          ? "Checking upgrade eligibility."
+          : "Upgrade options available.",
+      upgrade: {
+        cabin: cabinMatch?.[1] || "Premium cabin",
+        seat: seatMatch?.[1] || "",
+        cost: priceMatch ? `$${priceMatch[1]}` : milesMatch ? `${milesMatch[1]} miles` : "",
+      },
+      chips: ["View seat map", "Upgrade another flight", "Check status"],
+    };
+  }
+
   // ─── Miles / loyalty detection (BEFORE flight — prevents "missing miles" being shown as flight) ───
   const tierMatch = text.match(/(gold|silver|platinum|diamond)\s*medallion/i);
   const isMilesContext = milesMatch || tierMatch ||
@@ -93,23 +116,7 @@ function parseResponseToCard(text: string): ParsedCard {
     };
   }
 
-  // Upgrade detection
-  if (lower.includes("upgrade")) {
-    const cabinMatch = text.match(/(first class|delta one|comfort\+|premium select)/i);
-    const seatMatch = text.match(/seat\s*(\w+)/i);
-    return {
-      type: "upgrade",
-      headline: lower.includes("confirmed") || lower.includes("complete")
-        ? "Your upgrade is confirmed!"
-        : "Upgrade options available.",
-      upgrade: {
-        cabin: cabinMatch?.[1] || "Premium cabin",
-        seat: seatMatch?.[1] || "",
-        cost: priceMatch ? `$${priceMatch[1]}` : milesMatch ? `${milesMatch[1]} miles` : "",
-      },
-      chips: ["View seat map", "Upgrade another flight", "Check status"],
-    };
-  }
+  // (Upgrade detection moved above miles — see top of function)
 
   // Baggage detection
   if (lower.includes("bag") || lower.includes("luggage") || lower.includes("checked")) {
