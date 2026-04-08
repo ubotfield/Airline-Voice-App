@@ -515,9 +515,12 @@ app.post("/api/agent/message-stream", async (req, res) => {
           const ttsStart = Date.now();
           const model = "gemini-2.5-flash-preview-tts";
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+          const ttsController = new AbortController();
+          const ttsTimeout = setTimeout(() => ttsController.abort(), 15000);
           const ttsRes = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            signal: ttsController.signal,
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
               contents: [{ parts: [{ text: normalizedSentence }] }],
@@ -527,6 +530,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
               },
             }),
           });
+          clearTimeout(ttsTimeout);
 
           console.log(`[msg-stream] TTS response for sentence ${sIdx}: HTTP ${ttsRes.status}`);
           if (ttsRes.ok && ttsRes.body) {
@@ -1149,60 +1153,82 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
   const model = "gemini-2.5-flash-preview-tts";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 
-  const MAX_RETRIES = 2;
+  const MAX_RETRIES = 3;
+  const REQUEST_TIMEOUT_MS = 15000; // 15s per-request timeout
   let lastError = "";
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice },
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: voice },
+              },
             },
           },
-        },
-      }),
-    });
+        }),
+      });
+      clearTimeout(timeoutId);
 
-    if (!res.ok) {
-      const errText = await res.text();
-      lastError = `Gemini TTS API ${res.status}: ${errText.substring(0, 300)}`;
-      console.error(`[tts] Gemini attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
-      // Retry on 429 (rate limit) or 500/503 (transient)
-      if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
-        const backoffMs = attempt * 1000;
+      if (!res.ok) {
+        const errText = await res.text();
+        lastError = `Gemini TTS API ${res.status}: ${errText.substring(0, 300)}`;
+        console.error(`[tts] Gemini attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
+        // Retry on 429 (rate limit) or 500/503 (transient)
+        if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+          const backoffMs = attempt * 1500; // 1.5s, 3s backoff
+          console.log(`[tts] Retrying Gemini in ${backoffMs}ms...`);
+          await new Promise(r => setTimeout(r, backoffMs));
+          continue;
+        }
+        throw new Error(lastError);
+      }
+
+      const data = await res.json();
+      const part = data.candidates?.[0]?.content?.parts?.[0];
+      const audioB64 = part?.inlineData?.data;
+      if (!audioB64) {
+        lastError = "No audio data in Gemini TTS response";
+        console.error(`[tts] Gemini attempt ${attempt}: ${lastError}`);
+        if (attempt < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
+        throw new Error(lastError);
+      }
+
+      const mimeType = part?.inlineData?.mimeType || "unknown";
+      const pcmData = Buffer.from(audioB64, "base64");
+      console.log(`[tts] Gemini OK: mimeType=${mimeType}, pcm=${pcmData.length}B (attempt ${attempt})`);
+
+      const wavHeader = createWavHeader(pcmData.length);
+      return Buffer.concat([wavHeader, pcmData]);
+    } catch (fetchErr: any) {
+      clearTimeout(timeoutId);
+      if (fetchErr.name === "AbortError") {
+        lastError = `Gemini TTS timeout (${REQUEST_TIMEOUT_MS}ms) on attempt ${attempt}`;
+      } else {
+        lastError = fetchErr.message || "Unknown fetch error";
+      }
+      console.error(`[tts] Gemini attempt ${attempt}/${MAX_RETRIES}: ${lastError}`);
+      if (attempt < MAX_RETRIES) {
+        const backoffMs = attempt * 1500;
         console.log(`[tts] Retrying Gemini in ${backoffMs}ms...`);
         await new Promise(r => setTimeout(r, backoffMs));
         continue;
       }
       throw new Error(lastError);
     }
-
-    const data = await res.json();
-    const part = data.candidates?.[0]?.content?.parts?.[0];
-    const audioB64 = part?.inlineData?.data;
-    if (!audioB64) {
-      lastError = "No audio data in Gemini TTS response";
-      console.error(`[tts] Gemini attempt ${attempt}: ${lastError}`);
-      if (attempt < MAX_RETRIES) {
-        await new Promise(r => setTimeout(r, 500));
-        continue;
-      }
-      throw new Error(lastError);
-    }
-
-    const mimeType = part?.inlineData?.mimeType || "unknown";
-    const pcmData = Buffer.from(audioB64, "base64");
-    console.log(`[tts] Gemini OK: mimeType=${mimeType}, pcm=${pcmData.length}B (attempt ${attempt})`);
-
-    const wavHeader = createWavHeader(pcmData.length);
-    return Buffer.concat([wavHeader, pcmData]);
   }
 
   throw new Error(lastError || "Gemini TTS failed after retries");
@@ -1398,11 +1424,31 @@ app.post("/api/send-receipt", async (req, res) => {
 // ─── TTS Diagnostic (temporary) ─────────────────────────────────
 
 app.get("/api/tts-test", async (_req, res) => {
+  const startTime = Date.now();
+  const testText = "Welcome to Fly Delta. How can I help you today?";
   try {
-    const wavBuffer = await synthesizeViaGeminiAPI("Welcome to Fly Delta. How can I help you today?", "Kore");
-    res.json({ ok: true, bytes: wavBuffer.length });
+    const wavBuffer = await synthesizeViaGeminiAPI(testText, LLM_GW_VOICE);
+    const elapsed = Date.now() - startTime;
+    res.json({
+      ok: true,
+      bytes: wavBuffer.length,
+      elapsedMs: elapsed,
+      model: "gemini-2.5-flash-preview-tts",
+      voice: LLM_GW_VOICE,
+      geminiKeySet: !!process.env.GEMINI_API_KEY,
+      keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 6) + "..." : "none",
+    });
   } catch (err: any) {
-    res.json({ ok: false, error: err.message });
+    const elapsed = Date.now() - startTime;
+    res.json({
+      ok: false,
+      error: err.message,
+      elapsedMs: elapsed,
+      model: "gemini-2.5-flash-preview-tts",
+      voice: LLM_GW_VOICE,
+      geminiKeySet: !!process.env.GEMINI_API_KEY,
+      keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 6) + "..." : "none",
+    });
   }
 });
 
