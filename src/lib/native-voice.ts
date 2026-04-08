@@ -80,10 +80,14 @@ export class NativeVoiceService {
   private silenceDetectionInterval: number | null = null;
   private silenceStartTime: number | null = null;
   private speechDetected = false;
-  private static readonly SILENCE_THRESHOLD = 0.02; // Volume below this = silence
-  private static readonly SILENCE_DURATION_MS = 800; // Increased from 250ms — 250 was too aggressive, cutting chunks before speech captured
-  private static readonly MAX_RECORD_DURATION_MS = 8000; // Hard cap at 8s
-  private static readonly MIN_SPEECH_DURATION_MS = 300; // Minimum speech before stopping
+  private static readonly SILENCE_THRESHOLD = 0.015; // Volume below this = silence (lowered from 0.02 to catch soft-spoken numbers)
+  private static readonly SILENCE_DURATION_MS = 1500; // Wait 1.5s of silence before stopping (was 800ms — too aggressive for digit sequences)
+  private static readonly MAX_RECORD_DURATION_MS = 10000; // Hard cap at 10s (was 8s)
+  private static readonly MIN_SPEECH_DURATION_MS = 600; // Minimum speech before stopping (was 300ms — too short for numbers)
+
+  // Track consecutive empty STT results to provide "didn't catch that" feedback
+  private consecutiveEmptySTT = 0;
+  private static readonly MAX_EMPTY_STT_BEFORE_FEEDBACK = 2; // After 2 empty results, show feedback
 
   // Barge-in: user can interrupt playback by speaking
   private bargeInDetectionInterval: number | null = null;
@@ -504,7 +508,7 @@ export class NativeVoiceService {
     this.recognition.continuous = true;
     this.recognition.interimResults = false;
     this.recognition.lang = "en-US";
-    this.recognition.maxAlternatives = 1;
+    this.recognition.maxAlternatives = 3; // More alternatives improves accuracy for numbers/codes
 
     this.recognition.onstart = () => {
       this.lastRecognitionActivity = Date.now();
@@ -515,15 +519,29 @@ export class NativeVoiceService {
       this.lastRecognitionActivity = Date.now();
       const last = event.results[event.results.length - 1];
       if (last.isFinal) {
-        const text = last[0].transcript.trim();
-        if (text) {
-          dbg(`User said: "${text}" pipeline=${this.pipelineState}`);
+        // Pick the highest-confidence alternative
+        let bestText = "";
+        let bestConf = 0;
+        for (let i = 0; i < last.length; i++) {
+          const alt = last[i];
+          if (alt.transcript.trim() && alt.confidence > bestConf) {
+            bestText = alt.transcript.trim();
+            bestConf = alt.confidence;
+          }
+        }
+        // Fallback to first alternative if confidence is 0 (some browsers don't report it)
+        if (!bestText && last[0]?.transcript.trim()) {
+          bestText = last[0].transcript.trim();
+        }
+        if (bestText) {
+          this.consecutiveEmptySTT = 0; // Reset on successful recognition
+          dbg(`User said: "${bestText}" (confidence=${bestConf.toFixed(2)}) pipeline=${this.pipelineState}`);
           // Don't route if we're already speaking (prevents echo-triggered double responses)
           if (this.pipelineState === "speaking") {
             dbg("Ignoring transcription — pipeline is speaking (likely echo)");
             return;
           }
-          this.routeToAgent(text);
+          this.routeToAgent(bestText);
         }
       }
     };
@@ -872,12 +890,22 @@ export class NativeVoiceService {
       ].join(", ");
       dbg("STT response: \"" + (text || "(empty)") + "\" (" + sttInfo + ")");
       if (text && text.length > 0) {
+        this.consecutiveEmptySTT = 0; // Reset on successful transcription
         this.callbacks.onStatusChange?.("Processing...");
         await this.routeToAgent(text);
       } else {
-        dbg(`⚠️ STT returned empty text — discarding and recycling`);
-        this.pipelineState = "idle";
-        this.scheduleNextChunk();
+        this.consecutiveEmptySTT++;
+        dbg(`⚠️ STT returned empty text (${this.consecutiveEmptySTT} consecutive) — recycling`);
+        if (this.consecutiveEmptySTT >= NativeVoiceService.MAX_EMPTY_STT_BEFORE_FEEDBACK) {
+          // Send a "please repeat" prompt to the agent so it re-asks the question
+          this.consecutiveEmptySTT = 0;
+          this.callbacks.onStatusChange?.("Didn't catch that...");
+          dbg("Sending re-prompt to agent after multiple empty STT results");
+          await this.routeToAgent("I'm sorry, could you please repeat that?");
+        } else {
+          this.pipelineState = "idle";
+          this.scheduleNextChunk();
+        }
       }
     } catch (sttErr: any) {
       dbg("⚠️ STT fetch failed: " + (sttErr?.message || String(sttErr)));
