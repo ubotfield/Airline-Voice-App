@@ -1145,7 +1145,10 @@ export class NativeVoiceService {
     this.streamingPlaybackActive = true;
     this.streamingDraining = false;
     this.bargeInTriggered = false;
-    this.startBargeInDetection();
+    // CRITICAL: Do NOT start barge-in detection during streaming playback.
+    // The mic volume analyser picks up the speaker output (echo) and
+    // false-triggers barge-in within ~400ms, killing audio before the user hears it.
+    // Barge-in is only useful for non-streaming TTS (speakText/playPreFetchedAudio).
     await this.ensurePlaybackContext();
   }
 
