@@ -919,7 +919,10 @@ export class NativeVoiceService {
       const sttPayload: any = { audio: base64, mimeType: mimeType.split(";")[0] };
       if (this.sttContext) {
         sttPayload.context = this.sttContext;
-        dbg(`STT context hint: ${this.sttContext}`);
+        dbg(`STT context hint: ${this.sttContext} (will clear after this use)`);
+        // Self-clear: context applies ONLY to the immediate next STT call.
+        // Prevents stale context from affecting subsequent natural speech turns.
+        this.sttContext = null;
       }
       const res = await fetch(apiUrl("/api/stt"), {
         method: "POST",
