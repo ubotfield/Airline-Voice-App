@@ -588,6 +588,7 @@ export class NativeVoiceService {
     this.pipelineState = "recording";
     this.callbacks.onStatusChange?.("Listening...");
     this.recordedChunks = [];
+    this.peakVolumeDuringChunk = 0; // Reset peak volume tracker for this chunk
 
     // PWA fix: Resume monitoring AudioContext before recording — if suspended,
     // silence detection won't work and recording will always run the full 8s.

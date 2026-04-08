@@ -274,13 +274,23 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 try {
                   let greetingText = "";
                   let streamingWorked = false;
+                  let audioChunkCount = 0;
 
+                  console.log("[voice] Starting greeting streaming...");
                   await nativeRef.current?.startStreamingPlayback();
 
                   const { response } = await agentRef.current.sendMessageFullStreaming("Hello", {
-                    onTextChunk: () => { setStatus("Speaking..."); },
-                    onTextComplete: (fullText) => { greetingText = fullText; },
+                    onTextChunk: (chunk) => {
+                      console.log("[voice] Greeting text chunk:", chunk.substring(0, 40));
+                      setStatus("Speaking...");
+                    },
+                    onTextComplete: (fullText) => {
+                      greetingText = fullText;
+                      console.log("[voice] Greeting text complete:", fullText.substring(0, 60));
+                    },
                     onAudioChunk: (pcmBase64) => {
+                      audioChunkCount++;
+                      console.log("[voice] Greeting audio chunk #" + audioChunkCount + " size=" + pcmBase64.length);
                       nativeRef.current?.addStreamingChunk(pcmBase64);
                       streamingWorked = true;
                     },
@@ -289,14 +299,32 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   }, { skipFiller: true });
 
                   greetingText = response || greetingText;
+                  console.log("[voice] Greeting stream done: text=" + (greetingText || "(empty)").substring(0, 60) + " audioChunks=" + audioChunkCount + " streamingWorked=" + streamingWorked);
 
                   if (streamingWorked) {
+                    console.log("[voice] Finishing streaming playback...");
                     await nativeRef.current?.finishStreamingPlayback();
+                    console.log("[voice] Streaming playback finished ✓");
+                  } else {
+                    // Streaming produced no audio — clean up streaming state
+                    console.log("[voice] No audio chunks received — cleaning up streaming state");
+                    try { await nativeRef.current?.finishStreamingPlayback(); } catch { /* ignore */ }
                   }
 
                   if (!agentRef.current?.isActive) return;
-                  // Greeting audio already played via streaming above — just resume listening
-                  await nativeRef.current?.sendGreeting("");
+
+                  // If streaming produced audio, just resume listening (audio already played)
+                  // If no audio, speak the greeting text via TTS fallback
+                  if (streamingWorked) {
+                    console.log("[voice] Greeting audio played via streaming — resuming listening");
+                    await nativeRef.current?.sendGreeting("");
+                  } else if (greetingText) {
+                    console.log("[voice] No streaming audio — falling back to TTS for greeting");
+                    await nativeRef.current?.sendGreetingWithAudio(greetingText);
+                  } else {
+                    console.log("[voice] No greeting text or audio — just resuming listening");
+                    await nativeRef.current?.sendGreeting("");
+                  }
                 } catch (streamErr) {
                   console.warn("[voice] Greeting streaming failed, trying sync:", streamErr);
                   const { response: greeting, audioData } = await agentRef.current.sendMessageWithAudio("Hello");
@@ -345,22 +373,31 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               let fullAudioData: ArrayBuffer | undefined;
 
               try {
+                let msgAudioChunkCount = 0;
+                console.log("[voice] Starting message streaming for: " + userText.substring(0, 40));
                 await nativeRef.current?.startStreamingPlayback();
 
                 const { response } = await Promise.race([
                   agentRef.current!.sendMessageFullStreaming(userText, {
-                    onTextChunk: (_chunk, _fullText) => {
+                    onTextChunk: (chunk, _fullText) => {
+                      console.log("[voice] Msg text chunk: " + chunk.substring(0, 40));
                       setStatus("Speaking...");
                     },
                     onTextComplete: (fullText) => {
                       streamResponse = fullText;
+                      console.log("[voice] Msg text complete: " + fullText.substring(0, 60));
                     },
-                    onAudioChunk: (pcmBase64, _index, _sentenceIndex) => {
+                    onAudioChunk: (pcmBase64, _index, sentenceIndex) => {
+                      msgAudioChunkCount++;
+                      if (msgAudioChunkCount <= 3) {
+                        console.log("[voice] Msg audio chunk #" + msgAudioChunkCount + " sentence=" + sentenceIndex + " size=" + pcmBase64.length);
+                      }
                       nativeRef.current?.addStreamingChunk(pcmBase64);
                       streamingWorked = true;
                     },
                     onDone: (fullText) => {
                       streamResponse = fullText || streamResponse;
+                      console.log("[voice] Msg stream done: audioChunks=" + msgAudioChunkCount + " streaming=" + streamingWorked);
                     },
                     onError: (error) => {
                       console.warn("[voice] V5 stream error:", error);
@@ -372,7 +409,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 streamResponse = response || streamResponse;
 
                 if (streamingWorked) {
+                  console.log("[voice] Finishing msg streaming playback...");
                   await nativeRef.current?.finishStreamingPlayback();
+                  console.log("[voice] Msg streaming playback finished ✓");
+                } else {
+                  console.log("[voice] No audio chunks for message — cleaning up");
+                  try { await nativeRef.current?.finishStreamingPlayback(); } catch { /* ignore */ }
                 }
               } catch (v5Err: any) {
                 console.warn("[voice] V5 streaming failed, trying V3:", v5Err?.message);

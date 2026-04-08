@@ -450,6 +450,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
     // #3: Send thinking filler audio immediately (if cached)
     // Skip filler for greetings — the "One moment" audio shouldn't play as the first thing a user hears
     const skipFiller = req.body.skipFiller === true;
+    console.log(`[msg-stream] skipFiller=${skipFiller}, fillerCached=${!!thinkingFillerAudio}, GEMINI_KEY=${!!process.env.GEMINI_API_KEY}`);
     if (thinkingFillerAudio && !skipFiller) {
       res.write(`data: ${JSON.stringify({ type: "audio", chunk: thinkingFillerAudio, index: 0, sentenceIndex: -1 })}\n\n`);
       firstAudioSentTime = Date.now() - totalStart;
@@ -500,8 +501,12 @@ app.post("/api/agent/message-stream", async (req, res) => {
 
     // #1: Fire TTS in parallel (no sequential chain). Client buffers by sentenceIndex.
     const fireTtsForSentence = (sentence: string, sIdx: number) => {
-      if (!sentence.trim() || !process.env.GEMINI_API_KEY) return;
+      if (!sentence.trim() || !process.env.GEMINI_API_KEY) {
+        console.log(`[msg-stream] fireTtsForSentence: SKIPPED (empty=${!sentence.trim()}, noKey=${!process.env.GEMINI_API_KEY})`);
+        return;
+      }
       const normalizedSentence = normalizeTtsText(sentence);
+      console.log(`[msg-stream] fireTtsForSentence ${sIdx}: "${normalizedSentence.substring(0, 60)}..."`);
       const ttsPromise = (async () => {
         try {
           const ttsStart = Date.now();
@@ -520,6 +525,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
             }),
           });
 
+          console.log(`[msg-stream] TTS response for sentence ${sIdx}: HTTP ${ttsRes.status}`);
           if (ttsRes.ok && ttsRes.body) {
             const ttsReader = ttsRes.body.getReader();
             const ttsDecoder = new TextDecoder();
@@ -548,7 +554,8 @@ app.post("/api/agent/message-stream", async (req, res) => {
             }
             console.log(`[msg-stream] TTS sentence ${sIdx}: ${chunkIdx} chunks in ${Date.now() - ttsStart}ms`);
           } else {
-            console.warn(`[msg-stream] TTS failed for sentence ${sIdx}: ${ttsRes.status}`);
+            const errBody = ttsRes.ok ? "" : await ttsRes.text().catch(() => "");
+            console.warn(`[msg-stream] TTS FAILED for sentence ${sIdx}: HTTP ${ttsRes.status} — ${errBody.substring(0, 200)}`);
           }
         } catch (err: any) {
           console.warn(`[msg-stream] TTS error sentence ${sIdx}:`, err.message);
