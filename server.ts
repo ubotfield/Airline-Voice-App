@@ -832,10 +832,7 @@ app.post("/api/stt", async (req, res) => {
 
   try {
     const sttStart = Date.now();
-    // Use gemini-2.5-flash with thinking DISABLED for accurate STT
-    // - gemini-2.5-flash-lite refuses audio ("I need the audio file")
-    // - gemini-2.5-flash WITH thinking hallucinates fabricated text
-    // - gemini-2.5-flash WITHOUT thinking (thinkingBudget=0) transcribes accurately
+    // Use gemini-2.5-flash with thinking disabled for STT
     const sttModel = "gemini-2.5-flash";
     const apiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=${GEMINI_API_KEY}`,
@@ -843,16 +840,19 @@ app.post("/api/stt", async (req, res) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: "You are a speech-to-text transcription engine for a Delta Air Lines voice assistant. Users may say flight numbers, SkyMiles membership numbers (digits), names, or travel-related requests. Transcribe the audio EXACTLY as spoken — output only the verbatim spoken words. Never add commentary, never refuse, never say you cannot transcribe. If the audio contains numbers, transcribe them as digits (e.g. '12345' not 'twelve thousand three hundred forty five'). If audio is unclear, output your best guess of what was said." }],
+          },
           contents: [{
             parts: [
+              // Text instruction FIRST, then audio — order matters for multimodal
+              { text: "Transcribe:" },
               { inlineData: { mimeType: normalizedMime, data: audio } },
-              { text: "Transcribe this audio clip. Return ONLY the exact words spoken, nothing else. Do not add commentary, explanation, or interpretation." },
             ],
           }],
           generationConfig: {
             temperature: 0,
             maxOutputTokens: 256,
-            // Disable thinking inside generationConfig to prevent hallucinated transcriptions
             thinkingConfig: {
               thinkingBudget: 0,
             },
