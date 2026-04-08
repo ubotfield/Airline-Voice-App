@@ -332,63 +332,74 @@ app.post("/api/agent/speak-stream", async (req, res) => {
       const selectedVoice = LLM_GW_VOICE;
 
       try {
-        // Use Gemini streaming TTS — sends audio as it generates
-        const model = "gemini-2.5-flash-preview-tts";
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
-
-        const ttsRes = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-            contents: [{ parts: [{ text: responseText }] }],
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: selectedVoice },
+        // Try each TTS model in fallback chain
+        let ttsSuccess = false;
+        for (const model of TTS_MODELS) {
+          try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+            const ttsRes = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
+                contents: [{ parts: [{ text: responseText }] }],
+                generationConfig: {
+                  responseModalities: ["AUDIO"],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: selectedVoice },
+                    },
+                  },
                 },
-              },
-            },
-          }),
-        });
+              }),
+            });
 
-        if (ttsRes.ok && ttsRes.body) {
-          const reader = ttsRes.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let chunkCount = 0;
+            if (ttsRes.ok && ttsRes.body) {
+              const reader = ttsRes.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = "";
+              let chunkCount = 0;
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-            // Parse SSE events from the buffer
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || ""; // Keep incomplete last line
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
 
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue;
-              const jsonStr = line.slice(6).trim();
-              if (!jsonStr || jsonStr === "[DONE]") continue;
+                for (const line of lines) {
+                  if (!line.startsWith("data: ")) continue;
+                  const jsonStr = line.slice(6).trim();
+                  if (!jsonStr || jsonStr === "[DONE]") continue;
 
-              try {
-                const chunk = JSON.parse(jsonStr);
-                const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-                if (audioB64) {
-                  chunkCount++;
-                  // Send audio chunk to client as base64 PCM
-                  res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkCount })}\n\n`);
+                  try {
+                    const chunk = JSON.parse(jsonStr);
+                    const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                    if (audioB64) {
+                      chunkCount++;
+                      res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkCount })}\n\n`);
+                    }
+                  } catch { /* skip malformed JSON */ }
                 }
-              } catch { /* skip malformed JSON */ }
-            }
-          }
+              }
 
-          console.log(`[speak-stream] TTS: ${Date.now() - ttsStart}ms, ${chunkCount} chunks`);
-        } else {
-          console.error("[speak-stream] Gemini streaming TTS failed:", ttsRes.status);
-          // Fall back to non-streaming TTS
+              console.log(`[speak-stream] TTS ${model}: ${Date.now() - ttsStart}ms, ${chunkCount} chunks`);
+              ttsSuccess = true;
+              break; // success — stop trying models
+            } else {
+              console.warn(`[speak-stream] TTS ${model} failed: HTTP ${ttsRes.status}`);
+              continue; // try next model
+            }
+          } catch (modelErr: any) {
+            console.warn(`[speak-stream] TTS ${model} error: ${modelErr.message}`);
+            continue; // try next model
+          }
+        }
+
+        if (!ttsSuccess) {
+          console.error("[speak-stream] All streaming TTS models failed");
+          // Fall back to non-streaming TTS (which also has model fallback)
           try {
             const wavBuffer = await synthesizeViaGeminiAPI(responseText, selectedVoice);
             const audioBase64 = wavBuffer.toString("base64");
@@ -511,62 +522,68 @@ app.post("/api/agent/message-stream", async (req, res) => {
       const normalizedSentence = normalizeTtsText(sentence);
       console.log(`[msg-stream] fireTtsForSentence ${sIdx}: "${normalizedSentence.substring(0, 60)}..."`);
       const ttsPromise = (async () => {
-        try {
-          const ttsStart = Date.now();
-          const model = "gemini-2.5-flash-preview-tts";
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
-          const ttsController = new AbortController();
-          const ttsTimeout = setTimeout(() => ttsController.abort(), 15000);
-          const ttsRes = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            signal: ttsController.signal,
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-              contents: [{ parts: [{ text: normalizedSentence }] }],
-              generationConfig: {
-                responseModalities: ["AUDIO"],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
-              },
-            }),
-          });
-          clearTimeout(ttsTimeout);
+        // Try each model in the fallback chain
+        for (const model of TTS_MODELS) {
+          try {
+            const ttsStart = Date.now();
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+            const ttsController = new AbortController();
+            const ttsTimeout = setTimeout(() => ttsController.abort(), 15000);
+            const ttsRes = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              signal: ttsController.signal,
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
+                contents: [{ parts: [{ text: normalizedSentence }] }],
+                generationConfig: {
+                  responseModalities: ["AUDIO"],
+                  speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
+                },
+              }),
+            });
+            clearTimeout(ttsTimeout);
 
-          console.log(`[msg-stream] TTS response for sentence ${sIdx}: HTTP ${ttsRes.status}`);
-          if (ttsRes.ok && ttsRes.body) {
-            const ttsReader = ttsRes.body.getReader();
-            const ttsDecoder = new TextDecoder();
-            let ttsBuf = "";
-            let chunkIdx = 0;
-            while (true) {
-              const { done, value } = await ttsReader.read();
-              if (done) break;
-              ttsBuf += ttsDecoder.decode(value, { stream: true });
-              const ttsLines = ttsBuf.split("\n");
-              ttsBuf = ttsLines.pop() || "";
-              for (const ttsLine of ttsLines) {
-                if (!ttsLine.startsWith("data: ")) continue;
-                const jsonStr = ttsLine.slice(6).trim();
-                if (!jsonStr || jsonStr === "[DONE]") continue;
-                try {
-                  const chunk = JSON.parse(jsonStr);
-                  const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-                  if (audioB64) {
-                    chunkIdx++;
-                    if (!firstAudioSentTime) firstAudioSentTime = Date.now() - totalStart;
-                    res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: sIdx })}\n\n`);
-                  }
-                } catch { /* skip */ }
+            console.log(`[msg-stream] TTS ${model} sentence ${sIdx}: HTTP ${ttsRes.status}`);
+            if (ttsRes.ok && ttsRes.body) {
+              const ttsReader = ttsRes.body.getReader();
+              const ttsDecoder = new TextDecoder();
+              let ttsBuf = "";
+              let chunkIdx = 0;
+              while (true) {
+                const { done, value } = await ttsReader.read();
+                if (done) break;
+                ttsBuf += ttsDecoder.decode(value, { stream: true });
+                const ttsLines = ttsBuf.split("\n");
+                ttsBuf = ttsLines.pop() || "";
+                for (const ttsLine of ttsLines) {
+                  if (!ttsLine.startsWith("data: ")) continue;
+                  const jsonStr = ttsLine.slice(6).trim();
+                  if (!jsonStr || jsonStr === "[DONE]") continue;
+                  try {
+                    const chunk = JSON.parse(jsonStr);
+                    const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                    if (audioB64) {
+                      chunkIdx++;
+                      if (!firstAudioSentTime) firstAudioSentTime = Date.now() - totalStart;
+                      res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: sIdx })}\n\n`);
+                    }
+                  } catch { /* skip */ }
+                }
               }
+              console.log(`[msg-stream] TTS sentence ${sIdx}: ${chunkIdx} chunks in ${Date.now() - ttsStart}ms (${model})`);
+              return; // success — exit the model loop
+            } else {
+              const errBody = await ttsRes.text().catch(() => "");
+              console.warn(`[msg-stream] TTS ${model} FAILED sentence ${sIdx}: HTTP ${ttsRes.status} — ${errBody.substring(0, 200)}`);
+              continue; // try next model
             }
-            console.log(`[msg-stream] TTS sentence ${sIdx}: ${chunkIdx} chunks in ${Date.now() - ttsStart}ms`);
-          } else {
-            const errBody = ttsRes.ok ? "" : await ttsRes.text().catch(() => "");
-            console.warn(`[msg-stream] TTS FAILED for sentence ${sIdx}: HTTP ${ttsRes.status} — ${errBody.substring(0, 200)}`);
+          } catch (err: any) {
+            console.warn(`[msg-stream] TTS ${model} error sentence ${sIdx}: ${err.message}`);
+            continue; // try next model
           }
-        } catch (err: any) {
-          console.warn(`[msg-stream] TTS error sentence ${sIdx}:`, err.message);
         }
+        console.warn(`[msg-stream] All TTS models failed for sentence ${sIdx}`);
       })();
       ttsPromises.push(ttsPromise);
     };
@@ -715,47 +732,62 @@ async function handleSyncFallback(
 
     res.write(`data: ${JSON.stringify({ type: "text-complete", fullText: responseText })}\n\n`);
 
-    // TTS the full response
+    // TTS the full response — with model fallback
     if (responseText && process.env.GEMINI_API_KEY) {
-      const model = "gemini-2.5-flash-preview-tts";
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
-      const ttsRes = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-          contents: [{ parts: [{ text: responseText }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
-          },
-        }),
-      });
+      let ttsSuccess = false;
+      for (const model of TTS_MODELS) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+          const ttsRes = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
+              contents: [{ parts: [{ text: responseText }] }],
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
+              },
+            }),
+          });
 
-      if (ttsRes.ok && ttsRes.body) {
-        const ttsReader = ttsRes.body.getReader();
-        const ttsDecoder = new TextDecoder();
-        let ttsBuf = "";
-        let chunkIdx = 0;
-        while (true) {
-          const { done, value } = await ttsReader.read();
-          if (done) break;
-          ttsBuf += ttsDecoder.decode(value, { stream: true });
-          const ttsLines = ttsBuf.split("\n");
-          ttsBuf = ttsLines.pop() || "";
-          for (const ttsLine of ttsLines) {
-            if (!ttsLine.startsWith("data: ")) continue;
-            try {
-              const chunk = JSON.parse(ttsLine.slice(6).trim());
-              const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-              if (audioB64) {
-                chunkIdx++;
-                res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: 0 })}\n\n`);
-              }
-            } catch { /* skip */ }
+          if (!ttsRes.ok) {
+            console.warn(`[sync-fallback] TTS model ${model} returned ${ttsRes.status}, trying next...`);
+            continue;
           }
+
+          if (ttsRes.body) {
+            const ttsReader = ttsRes.body.getReader();
+            const ttsDecoder = new TextDecoder();
+            let ttsBuf = "";
+            let chunkIdx = 0;
+            while (true) {
+              const { done, value } = await ttsReader.read();
+              if (done) break;
+              ttsBuf += ttsDecoder.decode(value, { stream: true });
+              const ttsLines = ttsBuf.split("\n");
+              ttsBuf = ttsLines.pop() || "";
+              for (const ttsLine of ttsLines) {
+                if (!ttsLine.startsWith("data: ")) continue;
+                try {
+                  const chunk = JSON.parse(ttsLine.slice(6).trim());
+                  const audioB64 = chunk?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                  if (audioB64) {
+                    chunkIdx++;
+                    res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: 0 })}\n\n`);
+                  }
+                } catch { /* skip */ }
+              }
+            }
+            ttsSuccess = true;
+            break; // success — stop trying models
+          }
+        } catch (ttsErr: any) {
+          console.warn(`[sync-fallback] TTS model ${model} error: ${ttsErr.message}, trying next...`);
+          continue;
         }
       }
+      if (!ttsSuccess) console.warn("[sync-fallback] All TTS models failed for full-response TTS");
     }
 
     res.write(`data: ${JSON.stringify({ type: "done", fullText: responseText, totalMs: Date.now() - totalStart, sentences: 1 })}\n\n`);
@@ -913,6 +945,12 @@ const LLM_GW_APP_CONTEXT = process.env.LLM_GW_APP_CONTEXT || "EinsteinGPT";
 const LLM_GW_VOICE = process.env.LLM_GW_VOICE || "Kore";
 const LLM_GW_MODEL = process.env.LLM_GW_MODEL || "gemini-2.5-flash-tts";
 
+// TTS model fallback chain — if primary returns 500, try the next
+const TTS_MODELS = [
+  "gemini-2.5-flash-preview-tts",   // Primary: fast, cheap
+  "gemini-2.5-pro-preview-tts",     // Fallback: higher quality
+];
+
 // System instruction for TTS — prevents Gemini from adding vocal fillers
 const TTS_SYSTEM_INSTRUCTION = "Read this text exactly as written in a clear, professional tone. You are a Delta Air Lines customer service agent. Do not add filler words, sighs, gasps, laughter, or emotional vocalizations like 'oh', 'ah', 'hmm', 'uh', or 'ooh'. Simply read the text naturally and professionally.";
 
@@ -929,36 +967,41 @@ async function preGenerateThinkingFiller(): Promise<void> {
   }
 
   try {
-    const model = "gemini-2.5-flash-preview-tts";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: "One moment." }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } },
-          },
-        },
-      }),
-    });
+    for (const model of TTS_MODELS) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "One moment." }] }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } },
+              },
+            },
+          }),
+        });
 
-    if (!res.ok) {
-      console.warn("[filler] TTS failed:", res.status, await res.text().catch(() => ""));
-      return;
-    }
+        if (!res.ok) {
+          console.warn(`[filler] TTS model ${model} failed: ${res.status}, trying next...`);
+          continue;
+        }
 
-    const data = await res.json();
-    const audioB64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (audioB64) {
-      thinkingFillerAudio = audioB64;
-      const sizeKB = Math.round(Buffer.from(audioB64, "base64").length / 1024);
-      console.log(`[filler] ✓ Thinking filler cached (${sizeKB}KB PCM)`);
-    } else {
-      console.warn("[filler] No audio data in response");
+        const data = await res.json();
+        const audioB64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (audioB64) {
+          thinkingFillerAudio = audioB64;
+          console.log(`[filler] Generated thinking filler with model: ${model}`);
+          return;
+        }
+      } catch (modelErr: any) {
+        console.warn(`[filler] TTS model ${model} error: ${modelErr.message}, trying next...`);
+        continue;
+      }
     }
+    console.warn("[filler] All TTS models failed for thinking filler");
   } catch (err: any) {
     console.warn("[filler] Pre-generation failed:", err.message);
   }
@@ -1150,88 +1193,90 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) throw new Error("No GEMINI_API_KEY configured");
 
-  const model = "gemini-2.5-flash-preview-tts";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-
-  const MAX_RETRIES = 3;
-  const REQUEST_TIMEOUT_MS = 15000; // 15s per-request timeout
+  const MAX_RETRIES = 2; // retries per model
+  const REQUEST_TIMEOUT_MS = 15000;
   let lastError = "";
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-          contents: [{ parts: [{ text }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: voice },
+  // Try each model in the fallback chain
+  for (const model of TTS_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    console.log(`[tts] Trying model: ${model}`);
+
+    let modelFailed = false;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
+            contents: [{ parts: [{ text }] }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: voice },
+                },
               },
             },
-          },
-        }),
-      });
-      clearTimeout(timeoutId);
+          }),
+        });
+        clearTimeout(timeoutId);
 
-      if (!res.ok) {
-        const errText = await res.text();
-        lastError = `Gemini TTS API ${res.status}: ${errText.substring(0, 300)}`;
-        console.error(`[tts] Gemini attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
-        // Retry on 429 (rate limit) or 500/503 (transient)
-        if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
-          const backoffMs = attempt * 1500; // 1.5s, 3s backoff
-          console.log(`[tts] Retrying Gemini in ${backoffMs}ms...`);
-          await new Promise(r => setTimeout(r, backoffMs));
-          continue;
+        if (!res.ok) {
+          const errText = await res.text();
+          lastError = `${model} ${res.status}: ${errText.substring(0, 200)}`;
+          console.error(`[tts] ${model} attempt ${attempt}/${MAX_RETRIES}: ${lastError}`);
+          if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+            await new Promise(r => setTimeout(r, attempt * 1500));
+            continue;
+          }
+          modelFailed = true;
+          break; // try next model
         }
-        throw new Error(lastError);
-      }
 
-      const data = await res.json();
-      const part = data.candidates?.[0]?.content?.parts?.[0];
-      const audioB64 = part?.inlineData?.data;
-      if (!audioB64) {
-        lastError = "No audio data in Gemini TTS response";
-        console.error(`[tts] Gemini attempt ${attempt}: ${lastError}`);
+        const data = await res.json();
+        const part = data.candidates?.[0]?.content?.parts?.[0];
+        const audioB64 = part?.inlineData?.data;
+        if (!audioB64) {
+          lastError = `${model}: No audio data in response`;
+          console.error(`[tts] ${model} attempt ${attempt}: ${lastError}`);
+          if (attempt < MAX_RETRIES) { await new Promise(r => setTimeout(r, 500)); continue; }
+          modelFailed = true;
+          break;
+        }
+
+        const mimeType = part?.inlineData?.mimeType || "unknown";
+        const pcmData = Buffer.from(audioB64, "base64");
+        console.log(`[tts] ✓ ${model} OK: mimeType=${mimeType}, pcm=${pcmData.length}B (attempt ${attempt})`);
+
+        const wavHeader = createWavHeader(pcmData.length);
+        return Buffer.concat([wavHeader, pcmData]);
+      } catch (fetchErr: any) {
+        clearTimeout(timeoutId);
+        lastError = fetchErr.name === "AbortError"
+          ? `${model} timeout (${REQUEST_TIMEOUT_MS}ms) attempt ${attempt}`
+          : `${model}: ${fetchErr.message}`;
+        console.error(`[tts] ${lastError}`);
         if (attempt < MAX_RETRIES) {
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, attempt * 1500));
           continue;
         }
-        throw new Error(lastError);
+        modelFailed = true;
+        break;
       }
+    }
 
-      const mimeType = part?.inlineData?.mimeType || "unknown";
-      const pcmData = Buffer.from(audioB64, "base64");
-      console.log(`[tts] Gemini OK: mimeType=${mimeType}, pcm=${pcmData.length}B (attempt ${attempt})`);
-
-      const wavHeader = createWavHeader(pcmData.length);
-      return Buffer.concat([wavHeader, pcmData]);
-    } catch (fetchErr: any) {
-      clearTimeout(timeoutId);
-      if (fetchErr.name === "AbortError") {
-        lastError = `Gemini TTS timeout (${REQUEST_TIMEOUT_MS}ms) on attempt ${attempt}`;
-      } else {
-        lastError = fetchErr.message || "Unknown fetch error";
-      }
-      console.error(`[tts] Gemini attempt ${attempt}/${MAX_RETRIES}: ${lastError}`);
-      if (attempt < MAX_RETRIES) {
-        const backoffMs = attempt * 1500;
-        console.log(`[tts] Retrying Gemini in ${backoffMs}ms...`);
-        await new Promise(r => setTimeout(r, backoffMs));
-        continue;
-      }
-      throw new Error(lastError);
+    if (modelFailed) {
+      console.log(`[tts] Model ${model} failed, trying next model...`);
+      continue;
     }
   }
 
-  throw new Error(lastError || "Gemini TTS failed after retries");
+  throw new Error(`All TTS models failed. Last: ${lastError}`);
 }
 
 app.post("/api/tts", async (req, res) => {
@@ -1433,7 +1478,7 @@ app.get("/api/tts-test", async (_req, res) => {
       ok: true,
       bytes: wavBuffer.length,
       elapsedMs: elapsed,
-      model: "gemini-2.5-flash-preview-tts",
+      models: TTS_MODELS,
       voice: LLM_GW_VOICE,
       geminiKeySet: !!process.env.GEMINI_API_KEY,
       keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 6) + "..." : "none",
@@ -1444,7 +1489,7 @@ app.get("/api/tts-test", async (_req, res) => {
       ok: false,
       error: err.message,
       elapsedMs: elapsed,
-      model: "gemini-2.5-flash-preview-tts",
+      models: TTS_MODELS,
       voice: LLM_GW_VOICE,
       geminiKeySet: !!process.env.GEMINI_API_KEY,
       keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 6) + "..." : "none",
