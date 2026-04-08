@@ -1465,7 +1465,7 @@ let demoPersona = {
   customerPhone: process.env.DEMO_CUSTOMER_PHONE || "555-0100",
   customerEmail: process.env.DEMO_CUSTOMER_EMAIL || "marcus.johnson@example.com",
   skymilesNumber: process.env.DEMO_SKYMILES_NUMBER || "12345",
-  pnr: process.env.DEMO_PNR || "GHTK92",
+  pnr: process.env.DEMO_PNR || "WXMB33",
 };
 
 app.get("/api/demo-persona", async (_req, res) => {

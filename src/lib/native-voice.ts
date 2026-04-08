@@ -1140,6 +1140,10 @@ export class NativeVoiceService {
     // Must happen BEFORE the callback which may play audio during streaming.
     this.pauseListening();
 
+    // Stop any previous TTS playback before starting new agent response.
+    // Prevents two different responses from overlapping (audio talking over itself).
+    this.cancelAllPlayback();
+
     try {
       if (this.callbacks.onUserTranscription) {
         if (!this._isConnected) return;
