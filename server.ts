@@ -832,8 +832,10 @@ app.post("/api/stt", async (req, res) => {
 
   try {
     const sttStart = Date.now();
+    // Use gemini-2.5-flash-lite for STT — fast, cheap, and no thinking hallucinations
+    const sttModel = "gemini-2.5-flash-lite";
     const apiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -841,9 +843,14 @@ app.post("/api/stt", async (req, res) => {
           contents: [{
             parts: [
               { inlineData: { mimeType: normalizedMime, data: audio } },
-              { text: "Transcribe this audio. Return ONLY the exact spoken words, nothing else." },
+              { text: "Transcribe this audio exactly as spoken. Output ONLY the verbatim words, no commentary." },
             ],
           }],
+          generationConfig: {
+            // Disable thinking to prevent hallucinated transcriptions
+            thinkingConfig: { thinkingBudget: 0 },
+            temperature: 0,
+          },
         }),
       }
     );
@@ -862,7 +869,7 @@ app.post("/api/stt", async (req, res) => {
     console.log(`[stt] ${elapsed}ms, finish=${finishReason}, text="${text.substring(0, 100)}"`);
 
     // Return debug info alongside the text so the client debug console can show it
-    return res.json({ text, debug: { elapsed, finishReason, model: "gemini-2.5-flash", mime: normalizedMime } });
+    return res.json({ text, debug: { elapsed, finishReason, model: sttModel, mime: normalizedMime } });
   } catch (err: any) {
     console.error("[stt] Error:", err.message);
     return res.status(500).json({ error: err.message });
