@@ -832,8 +832,11 @@ app.post("/api/stt", async (req, res) => {
 
   try {
     const sttStart = Date.now();
-    // Use gemini-2.5-flash-lite for STT — fast, cheap, and no thinking hallucinations
-    const sttModel = "gemini-2.5-flash-lite";
+    // Use gemini-2.5-flash with thinking DISABLED for accurate STT
+    // - gemini-2.5-flash-lite refuses audio ("I need the audio file")
+    // - gemini-2.5-flash WITH thinking hallucinates fabricated text
+    // - gemini-2.5-flash WITHOUT thinking (thinkingBudget=0) transcribes accurately
+    const sttModel = "gemini-2.5-flash";
     const apiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -843,13 +846,16 @@ app.post("/api/stt", async (req, res) => {
           contents: [{
             parts: [
               { inlineData: { mimeType: normalizedMime, data: audio } },
-              { text: "Transcribe this audio exactly as spoken. Output ONLY the verbatim words, no commentary." },
+              { text: "Transcribe this audio clip. Return ONLY the exact words spoken, nothing else. Do not add commentary, explanation, or interpretation." },
             ],
           }],
           generationConfig: {
-            // Disable thinking to prevent hallucinated transcriptions
-            thinkingConfig: { thinkingBudget: 0 },
             temperature: 0,
+            maxOutputTokens: 256,
+          },
+          // thinkingConfig at top level disables reasoning/hallucination
+          thinkingConfig: {
+            thinkingBudget: 0,
           },
         }),
       }
