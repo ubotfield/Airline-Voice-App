@@ -121,6 +121,12 @@ export class NativeVoiceService {
   private static readonly MAX_RECORD_DURATION_MS = 10000; // Hard cap at 10s (was 8s)
   private static readonly MIN_SPEECH_DURATION_MS = 600; // Minimum speech before stopping (was 300ms — too short for numbers)
 
+  // Minimum peak volume during a recording chunk to consider it real speech.
+  // Recordings with peak below this are discarded as echo/silence/ambient noise.
+  // This prevents post-TTS echo from being sent to STT (which would hallucinate
+  // text from the previous turn, keeping the agent stuck in the wrong topic).
+  private static readonly MIN_PEAK_VOLUME_FOR_STT = 0.025;
+
   // Track consecutive empty STT results to provide "didn't catch that" feedback
   private consecutiveEmptySTT = 0;
   private static readonly MAX_EMPTY_STT_BEFORE_FEEDBACK = 2; // After 2 empty results, show feedback
@@ -142,6 +148,11 @@ export class NativeVoiceService {
   // Context hint for STT — set by the caller when the agent asks for specific data
   // e.g., "mileage-number", "confirmation-code", "flight-number"
   public sttContext: string | null = null;
+
+  // Track the last user message text to detect echo-induced duplicates.
+  // If STT transcribes text identical to the last user message, it's likely
+  // a TTS echo being picked up by the mic — discard it.
+  private lastUserMessage: string = "";
 
   get isConnected(): boolean {
     return this._isConnected;
@@ -694,6 +705,18 @@ export class NativeVoiceService {
         const blob = new Blob(this.recordedChunks, { type: actualMime });
         this.recordedChunks = [];
         dbg(`Recording stopped: ${chunkCount} chunks, blob=${blob.size}B, mime=${actualMime}, peak=${this.peakVolumeDuringChunk.toFixed(3)}`);
+
+        // ECHO/SILENCE GATE: If peak volume during the entire recording is below
+        // a minimum threshold, the audio is just background noise or residual TTS echo —
+        // not real user speech. Discard it to prevent STT from hallucinating text
+        // (e.g. transcribing echo of a mileage number when the user hasn't spoken yet).
+        if (this.peakVolumeDuringChunk < NativeVoiceService.MIN_PEAK_VOLUME_FOR_STT) {
+          dbg(`⚠️ Peak volume too low (${this.peakVolumeDuringChunk.toFixed(3)} < ${NativeVoiceService.MIN_PEAK_VOLUME_FOR_STT}) — discarding as echo/silence`);
+          this.pipelineState = "idle";
+          this.scheduleNextChunk();
+          return;
+        }
+
         if (blob.size > NativeVoiceService.MIN_AUDIO_SIZE) {
           this.pipelineState = "transcribing";
           this.transcribeAndRoute(blob, actualMime);
@@ -1089,6 +1112,15 @@ export class NativeVoiceService {
     this.lastRecognitionActivity = Date.now(); // reset watchdog
     this.callbacks.onStatusChange?.("Listening...");
 
+    // POST-TTS SETTLING DELAY: Wait briefly before starting recording.
+    // After TTS playback ends, the mic still picks up residual speaker echo/reverb
+    // for ~300-500ms, even with echoCancellation enabled. Without this delay, the
+    // recorder captures the echo, STT transcribes it as gibberish or previous context
+    // (e.g. the mileage number "12345"), and the agent stays in the wrong topic.
+    // 500ms is enough for echo cancellation to fully suppress the trailing audio.
+    await new Promise(r => setTimeout(r, 500));
+    if (!this._isConnected || !this.shouldRestart) return;
+
     if (this.sttMode === "speech-recognition") {
       // Fix 3: Stop any existing recognition before restarting — prevents
       // InvalidStateError or silent hangs when start() is called on an
@@ -1134,7 +1166,19 @@ export class NativeVoiceService {
 
   private async routeToAgent(userText: string): Promise<void> {
     if (this.pipelineState === "speaking") return;
+
+    // ECHO DUPLICATE GUARD: If the transcribed text is identical to the last
+    // user message we just sent, it's almost certainly TTS echo being picked
+    // up by the mic and transcribed. Discard it and keep listening.
+    if (userText && this.lastUserMessage && userText.trim().toLowerCase() === this.lastUserMessage.trim().toLowerCase()) {
+      dbg(`⚠️ Echo duplicate detected: "${userText}" matches last message — discarding`);
+      this.pipelineState = "idle";
+      this.scheduleNextChunk();
+      return;
+    }
+
     this.pipelineState = "speaking";
+    this.lastUserMessage = userText; // Track for echo duplicate detection
     this.callbacks.onStatusChange?.("Processing...");
 
     // CRITICAL: Pause recognition IMMEDIATELY when entering speaking state.
