@@ -192,7 +192,8 @@ app.post("/api/agent/message", async (req, res) => {
     }
     if (!responseText && data.text) responseText = data.text;
 
-    console.log(`[message] Agent responded in ${Date.now() - agentStart}ms:`, responseText.substring(0, 100) + "...");
+    console.log(`[message] Agent responded in ${Date.now() - agentStart}ms:`, responseText.substring(0, 200));
+    console.log(`[message] Raw messages:`, JSON.stringify(data.messages?.map((m: any) => ({ type: m.type, msg: (m.message || "").substring(0, 100) })) || "none"));
     return res.json({ response: responseText, raw: data });
   } catch (err: any) {
     console.error("[message] Error:", err.message);
@@ -451,6 +452,8 @@ app.post("/api/agent/message-stream", async (req, res) => {
     // Skip filler for greetings — the "One moment" audio shouldn't play as the first thing a user hears
     const skipFiller = req.body.skipFiller === true;
     console.log(`[msg-stream] skipFiller=${skipFiller}, fillerCached=${!!thinkingFillerAudio}, GEMINI_KEY=${!!process.env.GEMINI_API_KEY}`);
+    console.log(`[msg-stream] Message: "${message}", Variables: ${JSON.stringify(variables || [])}`);
+
     if (thinkingFillerAudio && !skipFiller) {
       res.write(`data: ${JSON.stringify({ type: "audio", chunk: thinkingFillerAudio, index: 0, sentenceIndex: -1 })}\n\n`);
       firstAudioSentTime = Date.now() - totalStart;
@@ -584,6 +587,8 @@ app.post("/api/agent/message-stream", async (req, res) => {
           try {
             const parsed = JSON.parse(jsonStr);
             const msgType = parsed.message?.type;
+            // Log ALL agent SSE events so we can diagnose routing/planner issues
+            console.log(`[msg-stream] Agent SSE: type=${msgType}, msg="${(parsed.message?.message || "").substring(0, 120)}"`);
 
             if (msgType === "TextChunk") {
               const chunkText = parsed.message?.message || "";
