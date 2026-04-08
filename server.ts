@@ -852,10 +852,10 @@ app.post("/api/stt", async (req, res) => {
           generationConfig: {
             temperature: 0,
             maxOutputTokens: 256,
-          },
-          // thinkingConfig at top level disables reasoning/hallucination
-          thinkingConfig: {
-            thinkingBudget: 0,
+            // Disable thinking inside generationConfig to prevent hallucinated transcriptions
+            thinkingConfig: {
+              thinkingBudget: 0,
+            },
           },
         }),
       }
