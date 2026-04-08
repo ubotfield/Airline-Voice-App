@@ -20,6 +20,42 @@ function dbg(msg: string): void {
   console.log(`[native-voice] ${msg}`);
 }
 
+/**
+ * Client-side normalization for phonetic letter→code patterns.
+ * Used when Web Speech API is active (server-side STT has its own normalizer).
+ * Examples: "you bee four one three" → "UB413"
+ */
+const CLIENT_PHONETIC_MAP: Record<string, string> = {
+  you: "U", bee: "B", be: "B", see: "C", sea: "C", are: "R", ay: "A",
+  dee: "D", ee: "E", ef: "F", jay: "J", kay: "K", em: "M", en: "N",
+  oh: "O", pee: "P", que: "Q", es: "S", tea: "T", tee: "T",
+  ex: "X", why: "Y", zee: "Z", zed: "Z", aye: "A", el: "L", eye: "I",
+  aitch: "H", ach: "H",
+};
+
+function normalizeClientSTT(text: string): string {
+  if (!text) return text;
+  const words = text.trim().split(/[\s-]+/);
+  // Only apply normalization for short utterances (likely codes)
+  if (words.length > 5) return text;
+
+  const isSpelling = words.length >= 2 && words.every(w => {
+    const lower = w.toLowerCase();
+    return w.length === 1 || /^\d+$/.test(w) || CLIENT_PHONETIC_MAP[lower] !== undefined;
+  });
+
+  if (isSpelling) {
+    const result = words.map(w => {
+      if (/^\d+$/.test(w)) return w;
+      if (w.length === 1) return w.toUpperCase();
+      return CLIENT_PHONETIC_MAP[w.toLowerCase()] || w.toUpperCase();
+    }).join("");
+    dbg(`Client STT normalize: "${text}" → "${result}"`);
+    return result;
+  }
+  return text;
+}
+
 export interface NativeVoiceCallbacks {
   onOpen?: () => void;
   onClose?: () => void;
@@ -102,6 +138,10 @@ export class NativeVoiceService {
   private preferredVoice: SpeechSynthesisVoice | null = null;
 
   private micUnlockPromise: Promise<MediaStream | null> | null = null;
+
+  // Context hint for STT — set by the caller when the agent asks for specific data
+  // e.g., "mileage-number", "confirmation-code", "flight-number"
+  public sttContext: string | null = null;
 
   get isConnected(): boolean {
     return this._isConnected;
@@ -535,7 +575,18 @@ export class NativeVoiceService {
         }
         if (bestText) {
           this.consecutiveEmptySTT = 0; // Reset on successful recognition
-          dbg(`User said: "${bestText}" (confidence=${bestConf.toFixed(2)}) pipeline=${this.pipelineState}`);
+          // Apply phonetic normalization when context suggests a code is expected
+          if (this.sttContext) {
+            const normalized = normalizeClientSTT(bestText);
+            if (normalized !== bestText) {
+              dbg(`User said: "${bestText}" → normalized to "${normalized}" (context=${this.sttContext}, confidence=${bestConf.toFixed(2)})`);
+              bestText = normalized;
+            } else {
+              dbg(`User said: "${bestText}" (confidence=${bestConf.toFixed(2)}, context=${this.sttContext}) pipeline=${this.pipelineState}`);
+            }
+          } else {
+            dbg(`User said: "${bestText}" (confidence=${bestConf.toFixed(2)}) pipeline=${this.pipelineState}`);
+          }
           // Don't route if we're already speaking (prevents echo-triggered double responses)
           if (this.pipelineState === "speaking") {
             dbg("Ignoring transcription — pipeline is speaking (likely echo)");
@@ -865,10 +916,15 @@ export class NativeVoiceService {
 
     try {
       const base64 = await this.blobToBase64(blob);
+      const sttPayload: any = { audio: base64, mimeType: mimeType.split(";")[0] };
+      if (this.sttContext) {
+        sttPayload.context = this.sttContext;
+        dbg(`STT context hint: ${this.sttContext}`);
+      }
       const res = await fetch(apiUrl("/api/stt"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audio: base64, mimeType: mimeType.split(";")[0] }),
+        body: JSON.stringify(sttPayload),
       });
 
       if (!res.ok) {

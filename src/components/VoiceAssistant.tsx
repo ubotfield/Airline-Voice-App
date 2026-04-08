@@ -456,6 +456,23 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
               const response = streamResponse;
 
+              // Detect if agent is asking for a code/number → set STT context for next turn
+              if (nativeRef.current) {
+                const lower = response.toLowerCase();
+                if (lower.includes("skymiles") || lower.includes("mileage number") || lower.includes("membership number") || lower.includes("loyalty number") || lower.includes("miles number")) {
+                  nativeRef.current.sttContext = "mileage-number";
+                  console.log("[voice] STT context set: mileage-number");
+                } else if (lower.includes("confirmation") || lower.includes("booking code") || lower.includes("pnr") || lower.includes("record locator")) {
+                  nativeRef.current.sttContext = "confirmation-code";
+                  console.log("[voice] STT context set: confirmation-code");
+                } else if (lower.includes("flight number") || lower.includes("which flight")) {
+                  nativeRef.current.sttContext = "flight-number";
+                  console.log("[voice] STT context set: flight-number");
+                } else {
+                  nativeRef.current.sttContext = null;
+                }
+              }
+
               // Add conversation turn
               const turnId = `turn-${++turnCounter.current}`;
               setTurns(prev => [...prev, { id: turnId, userText, agentText: response }]);

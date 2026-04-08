@@ -861,10 +861,89 @@ app.get("/api/menu", async (_req, res) => {
   }
 });
 
+// ─── STT Post-Processing: Normalize phonetic letter patterns to alphanumeric codes ─
+
+const PHONETIC_MAP: Record<string, string> = {
+  you: "U", bee: "B", be: "B", see: "C", sea: "C", are: "R", ay: "A",
+  dee: "D", ee: "E", ef: "F", jay: "J", kay: "K", em: "M", en: "N",
+  oh: "O", pee: "P", que: "Q", es: "S", tea: "T", tee: "T",
+  "double you": "W", "double-you": "W", ex: "X", why: "Y", zee: "Z", zed: "Z",
+  // Common single-letter sounds that Gemini might output as words
+  aye: "A", el: "L", eye: "I", aitch: "H", ach: "H",
+};
+
+/**
+ * Post-process STT output to fix common phonetic→letter misinterpretations.
+ * Examples:
+ *   "you bee four one three" → "UB413"
+ *   "you be 413" → "UB413"
+ *   "delta 1234" → "DL1234" (airline code normalization)
+ */
+function normalizeSTTAlphanumeric(text: string): string {
+  if (!text) return text;
+  let result = text.trim();
+
+  // Step 1: Replace multi-word phonetics first ("double you" → "W")
+  for (const [phonetic, letter] of Object.entries(PHONETIC_MAP)) {
+    if (phonetic.includes(" ") || phonetic.includes("-")) {
+      const regex = new RegExp(`\\b${phonetic.replace("-", "[\\s-]")}\\b`, "gi");
+      result = result.replace(regex, letter);
+    }
+  }
+
+  // Step 2: Check if the text looks like a letter-by-letter spelling
+  // Pattern: sequence of single letters/phonetics with spaces or dashes
+  const words = result.split(/[\s-]+/);
+  const isSpelling = words.length >= 2 && words.every(w => {
+    const lower = w.toLowerCase();
+    return (
+      w.length === 1 || // single character
+      /^\d+$/.test(w) || // digits
+      PHONETIC_MAP[lower] !== undefined || // phonetic word
+      /^[a-zA-Z]$/.test(w) // single letter
+    );
+  });
+
+  if (isSpelling) {
+    // Convert each word to its letter/digit equivalent
+    result = words.map(w => {
+      if (/^\d+$/.test(w)) return w; // keep digit sequences
+      if (w.length === 1) return w.toUpperCase(); // single letter
+      return PHONETIC_MAP[w.toLowerCase()] || w.toUpperCase();
+    }).join("");
+    console.log(`[stt-normalize] Detected spelling pattern: "${text}" → "${result}"`);
+  } else {
+    // Step 3: For non-spelling text, still replace isolated phonetic words
+    // that are clearly letter references (e.g., "you bee 413" → "UB413")
+    // Only if text is short (likely a code, not a sentence)
+    if (words.length <= 5) {
+      let hasPhonetic = false;
+      const mapped = words.map(w => {
+        const lower = w.toLowerCase();
+        if (PHONETIC_MAP[lower] && w.length > 1) {
+          hasPhonetic = true;
+          return PHONETIC_MAP[lower];
+        }
+        return w;
+      });
+      if (hasPhonetic) {
+        const combined = mapped.join("");
+        // Only use combined form if it looks like a code (alphanumeric, no spaces needed)
+        if (/^[A-Z0-9]+$/i.test(combined) && combined.length <= 10) {
+          result = combined.toUpperCase();
+          console.log(`[stt-normalize] Short code normalization: "${text}" → "${result}"`);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
 // ─── STT: Gemini (server-side fallback for platforms without Web Speech API) ─
 
 app.post("/api/stt", async (req, res) => {
-  const { audio, mimeType } = req.body;
+  const { audio, mimeType, context } = req.body;
   if (!audio) return res.status(400).json({ error: "audio (base64) is required" });
 
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -873,12 +952,23 @@ app.post("/api/stt", async (req, res) => {
   // Normalize MIME type — strip codec params and map iOS types
   let normalizedMime = (mimeType || "audio/webm").split(";")[0].trim();
   // iOS Safari MediaRecorder produces audio/mp4 (AAC) — Gemini accepts this directly
-  console.log(`[stt] Received ${Math.round(audio.length * 0.75 / 1024)}KB audio, mime=${mimeType} → ${normalizedMime}`);
+  console.log(`[stt] Received ${Math.round(audio.length * 0.75 / 1024)}KB audio, mime=${mimeType} → ${normalizedMime}, context=${context || "none"}`);
+
+  // Build context-aware hint for the system instruction
+  let contextHint = "";
+  if (context === "mileage-number") {
+    contextHint = " CONTEXT: The agent just asked for a SkyMiles/mileage membership number. The user is likely speaking an alphanumeric code (letters and digits). Prioritize interpreting the audio as a code like 'UB413'.";
+  } else if (context === "confirmation-code") {
+    contextHint = " CONTEXT: The agent just asked for a confirmation/booking code. The user is likely speaking a 6-character alphanumeric code. Prioritize interpreting the audio as a PNR code.";
+  } else if (context === "flight-number") {
+    contextHint = " CONTEXT: The agent just asked for a flight number. The user is likely saying something like 'DL1234' or 'Delta 1234'. Prioritize interpreting the audio as a flight number.";
+  }
 
   try {
     const sttStart = Date.now();
     // Use gemini-2.5-flash with thinking disabled for STT
     const sttModel = "gemini-2.5-flash";
+    const baseInstruction = "You are a speech-to-text transcription engine for a Delta Air Lines voice assistant. Users may say flight numbers (e.g. 'DL1234', 'Delta 1234'), SkyMiles membership numbers (alphanumeric codes like 'UB413'), confirmation codes (6-character alphanumeric like 'ABC123'), names, or travel-related requests. Transcribe the audio EXACTLY as spoken — output only the verbatim spoken words. Never add commentary, never refuse, never say you cannot transcribe. CRITICAL RULES FOR CODES AND NUMBERS: 1) If the speaker is spelling out letters and digits one-by-one (e.g. 'U-B-4-1-3' or 'you bee four one three'), combine them into a single alphanumeric code (e.g. 'UB413'). 2) If the audio contains numbers, transcribe them as digits (e.g. '12345' not 'twelve thousand'). 3) Recognize phonetic alphabet and common letter sounds: 'you'='U', 'bee'/'be'='B', 'see'/'sea'='C', 'are'='R', 'ay'='A', 'dee'='D', 'ee'='E', 'ef'='F', 'jay'='J', 'kay'='K', 'em'='M', 'en'='N', 'oh'='O', 'pee'='P', 'que'='Q', 'es'='S', 'tea'/'tee'='T', 'double-you'='W', 'ex'='X', 'why'='Y', 'zee'/'zed'='Z'. 4) If the speaker says just a short code or number with no other words, output ONLY the code (e.g. 'UB413' not 'My number is UB413'). If audio is unclear, output your best guess of what was said.";
     const apiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -886,12 +976,12 @@ app.post("/api/stt", async (req, res) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           systemInstruction: {
-            parts: [{ text: "You are a speech-to-text transcription engine for a Delta Air Lines voice assistant. Users may say flight numbers, SkyMiles membership numbers (digits), names, or travel-related requests. Transcribe the audio EXACTLY as spoken — output only the verbatim spoken words. Never add commentary, never refuse, never say you cannot transcribe. If the audio contains numbers, transcribe them as digits (e.g. '12345' not 'twelve thousand three hundred forty five'). If audio is unclear, output your best guess of what was said." }],
+            parts: [{ text: baseInstruction + contextHint }],
           },
           contents: [{
             parts: [
               // Text instruction FIRST, then audio — order matters for multimodal
-              { text: "Transcribe:" },
+              { text: contextHint ? "Transcribe (expecting a code or number):" : "Transcribe:" },
               { inlineData: { mimeType: normalizedMime, data: audio } },
             ],
           }],
@@ -915,12 +1005,19 @@ app.post("/api/stt", async (req, res) => {
     const data = await apiRes.json();
     const candidate = data.candidates?.[0];
     const finishReason = candidate?.finishReason || "unknown";
-    const text = candidate?.content?.parts?.[0]?.text?.trim() || "";
+    const rawText = candidate?.content?.parts?.[0]?.text?.trim() || "";
     const elapsed = Date.now() - sttStart;
-    console.log(`[stt] ${elapsed}ms, finish=${finishReason}, text="${text.substring(0, 100)}"`);
+
+    // Post-process: normalize phonetic letter patterns → alphanumeric codes
+    const text = normalizeSTTAlphanumeric(rawText);
+    if (text !== rawText) {
+      console.log(`[stt] ${elapsed}ms, finish=${finishReason}, raw="${rawText}" → normalized="${text}"`);
+    } else {
+      console.log(`[stt] ${elapsed}ms, finish=${finishReason}, text="${text.substring(0, 100)}"`);
+    }
 
     // Return debug info alongside the text so the client debug console can show it
-    return res.json({ text, debug: { elapsed, finishReason, model: sttModel, mime: normalizedMime } });
+    return res.json({ text, debug: { elapsed, finishReason, model: sttModel, mime: normalizedMime, rawText: rawText !== text ? rawText : undefined, context: context || undefined } });
   } catch (err: any) {
     console.error("[stt] Error:", err.message);
     return res.status(500).json({ error: err.message });
