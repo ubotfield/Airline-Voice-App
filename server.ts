@@ -957,7 +957,7 @@ app.post("/api/stt", async (req, res) => {
   // Build context-aware hint for the system instruction
   let contextHint = "";
   if (context === "mileage-number") {
-    contextHint = " CONTEXT: The agent just asked for a SkyMiles/mileage membership number. The user is likely speaking a number (digits only like '12345') or an alphanumeric code (letters and digits like 'AB123'). Transcribe exactly what is spoken — do not invent letters or digits.";
+    contextHint = " CONTEXT: The agent just asked for a SkyMiles/mileage membership number. The user will say a SHORT code — typically 3 to 6 characters (digits like '12345' or alphanumeric like 'AB123'). CRITICAL: Transcribe ONLY the exact digits/letters spoken. Do NOT pad, extend, or add extra digits. If the user says five digits, output exactly five digits. Never output more characters than were actually spoken.";
   } else if (context === "confirmation-code") {
     contextHint = " CONTEXT: The agent just asked for a confirmation/booking code. The user is likely speaking a 6-character alphanumeric code. Prioritize interpreting the audio as a PNR code.";
   } else if (context === "flight-number") {
@@ -968,7 +968,7 @@ app.post("/api/stt", async (req, res) => {
     const sttStart = Date.now();
     // Use gemini-2.5-flash with thinking disabled for STT
     const sttModel = "gemini-2.5-flash";
-    const baseInstruction = "You are a speech-to-text transcription engine for a Delta Air Lines voice assistant. Users may say flight numbers (e.g. 'DL1234', 'Delta 1234'), SkyMiles membership numbers (numeric like '12345' or alphanumeric like 'AB123'), confirmation codes (6-character alphanumeric like 'WXMB33'), names, or travel-related requests. Transcribe the audio EXACTLY as spoken — output only the verbatim spoken words. Never add commentary, never refuse, never say you cannot transcribe. Never invent or hallucinate letters or digits that were not spoken. CRITICAL RULES FOR CODES AND NUMBERS: 1) If the speaker is spelling out letters and digits one-by-one (e.g. 'A-B-1-2-3'), combine them into a single code (e.g. 'AB123'). 2) If the audio contains numbers, transcribe them as digits (e.g. '12345' not 'twelve thousand'). 3) Recognize phonetic alphabet and common letter sounds: 'you'='U', 'bee'/'be'='B', 'see'/'sea'='C', 'are'='R', 'ay'='A', 'dee'='D', 'ee'='E', 'ef'='F', 'jay'='J', 'kay'='K', 'em'='M', 'en'='N', 'oh'='O', 'pee'='P', 'que'='Q', 'es'='S', 'tea'/'tee'='T', 'double-you'='W', 'ex'='X', 'why'='Y', 'zee'/'zed'='Z'. 4) If the speaker says just a short code or number with no other words, output ONLY the code. If audio is unclear, output your best guess of what was said.";
+    const baseInstruction = "You are a speech-to-text transcription engine for a Delta Air Lines voice assistant. Transcribe the audio EXACTLY as spoken — output only the verbatim spoken words. Never add commentary, never refuse, never say you cannot transcribe. ABSOLUTE RULE: Never invent, pad, or hallucinate extra letters or digits beyond what was actually spoken. If the speaker says 5 digits, output exactly 5 digits — never 10. CRITICAL RULES: 1) Users may say flight numbers ('DL1234'), SkyMiles numbers (short codes, typically 3-6 characters like '12345'), or confirmation codes (6-character like 'WXMB33'). 2) If spelling out letters one-by-one ('A-B-1-2-3'), combine into a single code ('AB123'). 3) Transcribe numbers as digits ('12345' not 'twelve thousand'). 4) Phonetic alphabet: 'you'='U', 'bee'/'be'='B', 'see'/'sea'='C', 'are'='R', 'ay'='A', 'dee'='D', 'ee'='E', 'ef'='F', 'jay'='J', 'kay'='K', 'em'='M', 'en'='N', 'oh'='O', 'pee'='P', 'que'='Q', 'es'='S', 'tea'/'tee'='T', 'double-you'='W', 'ex'='X', 'why'='Y', 'zee'/'zed'='Z'. 5) If the speaker says just a short code, output ONLY that code — nothing more.";
     const apiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${sttModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -981,13 +981,15 @@ app.post("/api/stt", async (req, res) => {
           contents: [{
             parts: [
               // Text instruction FIRST, then audio — order matters for multimodal
-              { text: contextHint ? "Transcribe (expecting a code or number):" : "Transcribe:" },
+              { text: context
+                ? "Listen to this audio. The speaker is saying a SHORT code or number (3-6 characters). Output ONLY the exact characters spoken — no extra digits, no padding to 10 digits. Transcribe:"
+                : "Transcribe:" },
               { inlineData: { mimeType: normalizedMime, data: audio } },
             ],
           }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 256,
+            maxOutputTokens: context ? 24 : 256,
             thinkingConfig: {
               thinkingBudget: 0,
             },
@@ -1009,7 +1011,15 @@ app.post("/api/stt", async (req, res) => {
     const elapsed = Date.now() - sttStart;
 
     // Post-process: normalize phonetic letter patterns → alphanumeric codes
-    const text = normalizeSTTAlphanumeric(rawText);
+    let text = normalizeSTTAlphanumeric(rawText);
+
+    // Guard: if context expects a short code but STT returned a suspiciously long digit string,
+    // the model likely hallucinated extra digits (e.g. "12345" → "1234567890").
+    // Log warning for diagnostics. This commonly happens when Gemini interprets digits as a phone number.
+    if ((context === "mileage-number" || context === "confirmation-code") && /^\d{7,}$/.test(text)) {
+      console.log(`[stt] ⚠️ Possible digit hallucination: "${text}" (${text.length} digits for ${context})`);
+    }
+
     if (text !== rawText) {
       console.log(`[stt] ${elapsed}ms, finish=${finishReason}, raw="${rawText}" → normalized="${text}"`);
     } else {
