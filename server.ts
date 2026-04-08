@@ -341,8 +341,7 @@ app.post("/api/agent/speak-stream", async (req, res) => {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-                contents: [{ parts: [{ text: responseText }] }],
+                contents: [{ parts: [{ text: TTS_STYLE_PREFIX + responseText }] }],
                 generationConfig: {
                   responseModalities: ["AUDIO"],
                   speechConfig: {
@@ -534,8 +533,7 @@ app.post("/api/agent/message-stream", async (req, res) => {
               headers: { "Content-Type": "application/json" },
               signal: ttsController.signal,
               body: JSON.stringify({
-                systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-                contents: [{ parts: [{ text: normalizedSentence }] }],
+                contents: [{ parts: [{ text: TTS_STYLE_PREFIX + normalizedSentence }] }],
                 generationConfig: {
                   responseModalities: ["AUDIO"],
                   speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
@@ -742,8 +740,7 @@ async function handleSyncFallback(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-              contents: [{ parts: [{ text: responseText }] }],
+              contents: [{ parts: [{ text: TTS_STYLE_PREFIX + responseText }] }],
               generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: LLM_GW_VOICE } } },
@@ -952,7 +949,8 @@ const TTS_MODELS = [
 ];
 
 // System instruction for TTS — prevents Gemini from adding vocal fillers
-const TTS_SYSTEM_INSTRUCTION = "Read this text exactly as written in a clear, professional tone. You are a Delta Air Lines customer service agent. Do not add filler words, sighs, gasps, laughter, or emotional vocalizations like 'oh', 'ah', 'hmm', 'uh', or 'ooh'. Simply read the text naturally and professionally.";
+// Style prefix prepended to text content (TTS models don't support systemInstruction)
+const TTS_STYLE_PREFIX = "Say in a clear, professional, friendly tone as a Delta Air Lines customer service agent: ";
 
 // ─── #3: Thinking filler audio — pre-generated at startup ────────
 // A short "One moment please" clip sent immediately when the user speaks,
@@ -1212,8 +1210,7 @@ async function synthesizeViaGeminiAPI(text: string, voice: string): Promise<Buff
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: TTS_SYSTEM_INSTRUCTION }] },
-            contents: [{ parts: [{ text }] }],
+            contents: [{ parts: [{ text: TTS_STYLE_PREFIX + text }] }],
             generationConfig: {
               responseModalities: ["AUDIO"],
               speechConfig: {
