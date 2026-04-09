@@ -206,6 +206,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [currentUserText, setCurrentUserText] = useState("");
   const [confirmedTurnIds, setConfirmedTurnIds] = useState<Set<string>>(new Set());
+  // Track whether a confirmation flow is active — prevents duplicate cards
+  // Once user taps Yes/No, this stays true until the agent finishes the action
+  const confirmationActiveRef = useRef(false);
+  // Count of auto-reconfirms sent — prevents infinite loops
+  const autoReconfirmCount = useRef(0);
+  const MAX_AUTO_RECONFIRMS = 2;
 
   const { addNotification } = useNotifications();
   const hasErrorRef = useRef(false);
@@ -223,14 +229,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     if (confirmInFlight.current || !agentRef.current?.isActive || !nativeRef.current) return;
     confirmInFlight.current = true;
     try {
-      // Mark the latest turn as confirmed so buttons hide immediately
+      // Mark ALL existing turns as confirmed so no duplicate buttons appear
       setTurns(prev => {
-        const lastTurn = prev[prev.length - 1];
-        if (lastTurn) {
-          setConfirmedTurnIds(s => new Set(s).add(lastTurn.id));
-        }
+        const newConfirmed = new Set(confirmedTurnIds);
+        prev.forEach(t => newConfirmed.add(t.id));
+        setConfirmedTurnIds(newConfirmed);
         return prev;
       });
+
+      // Set confirmation flow active — subsequent agent re-confirms will be auto-handled
+      confirmationActiveRef.current = (answer === "Yes");
+      autoReconfirmCount.current = 0;
 
       nativeRef.current.sttContext = null; // Clear any STT context bias
       // Send explicit instruction so agent executes rather than re-confirms
@@ -351,6 +360,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       setStatus("Connecting...");
       setTurns([]);
       setCurrentUserText("");
+      setConfirmedTurnIds(new Set());
+      confirmationActiveRef.current = false;
+      autoReconfirmCount.current = 0;
       currentTopicRef.current = "none"; // Reset topic tracking for fresh session
 
       if (nativeRef.current) { nativeRef.current.disconnect(); nativeRef.current = null; }
@@ -631,6 +643,41 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 } else {
                   nativeRef.current.sttContext = null;
                 }
+              }
+
+              // ─── AUTO-RECONFIRM INTERCEPTOR ─────────────────────────────
+              // The Agentforce planner has built-in confirmation that re-asks even after
+              // the user said "Yes". If confirmationActiveRef is true (user already tapped
+              // Yes), and the agent's response is ANOTHER confirmation question, auto-send
+              // "Yes" again without showing a card — and DON'T create a visible turn.
+              const reconfirmPhrases = [
+                "just to confirm", "would you like me to", "shall i go ahead",
+                "would you like to proceed", "do you want me to", "shall i credit",
+                "shall i process", "confirm that you", "ready to proceed",
+                "want to go ahead", "like me to credit", "like me to process",
+              ];
+              const responseLower = response.toLowerCase();
+              const isReconfirmation = reconfirmPhrases.some(p => responseLower.includes(p));
+
+              if (confirmationActiveRef.current && isReconfirmation && autoReconfirmCount.current < MAX_AUTO_RECONFIRMS) {
+                autoReconfirmCount.current++;
+                console.log(`[voice] ⚡ Auto-reconfirm #${autoReconfirmCount.current}: agent re-asked "${response.substring(0, 60)}..." — auto-sending Yes`);
+                // Don't add this as a visible turn — silently re-confirm
+                if (nativeRef.current && agentRef.current?.isActive) {
+                  nativeRef.current.injectText("Yes, confirmed. Execute now.");
+                }
+                // Return the streaming result as-is (audio already played)
+                if (streamingWorked) {
+                  return { text: response, audioPlayed: true } as any;
+                }
+                return { text: response, audioData: fullAudioData } as any;
+              }
+
+              // If we get here, the confirmation flow is done (agent gave a real response)
+              if (confirmationActiveRef.current && !isReconfirmation) {
+                confirmationActiveRef.current = false;
+                autoReconfirmCount.current = 0;
+                console.log("[voice] Confirmation flow complete — agent executed action");
               }
 
               // Add conversation turn
@@ -936,8 +983,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {!card.miles.balance || card.miles.balance === "---" ? (
                           <p className="text-sm text-on-primary-container/80 font-medium leading-relaxed">{turn.agentText}</p>
                         ) : null}
-                        {/* Tap-to-confirm buttons — only on latest unconfirmed turn */}
-                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && (
+                        {/* Tap-to-confirm buttons — only on FIRST unconfirmed card, never when auto-reconfirm active */}
+                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && !confirmationActiveRef.current && (
                           <div className="flex gap-3 mt-4 pt-3 border-t border-white/10">
                             <button
                               onClick={() => sendConfirmation("Yes")}
@@ -955,7 +1002,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                             </button>
                           </div>
                         )}
-                        {card.needsConfirmation && confirmedTurnIds.has(turn.id) && (
+                        {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActiveRef.current) && (
                           <div className="mt-4 pt-3 border-t border-white/10">
                             <p className="text-sm text-white/60 font-medium text-center">Processing…</p>
                           </div>
@@ -977,8 +1024,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {card.upgrade.cost && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
                         )}
-                        {/* Tap-to-confirm buttons — only on latest unconfirmed turn */}
-                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && (
+                        {/* Tap-to-confirm buttons — only on FIRST unconfirmed card, never when auto-reconfirm active */}
+                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && !confirmationActiveRef.current && (
                           <div className="flex gap-3 mt-4 pt-3 border-t border-outline-variant/20">
                             <button
                               onClick={() => sendConfirmation("Yes")}
@@ -996,7 +1043,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                             </button>
                           </div>
                         )}
-                        {card.needsConfirmation && confirmedTurnIds.has(turn.id) && (
+                        {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActiveRef.current) && (
                           <div className="mt-4 pt-3 border-t border-outline-variant/20">
                             <p className="text-sm text-on-surface-variant font-medium text-center">Processing…</p>
                           </div>
