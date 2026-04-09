@@ -1394,6 +1394,13 @@ function closeGatewayCircuit(): void {
  * Converts dollar amounts, order numbers, and other patterns to spoken form.
  */
 function normalizeTtsText(text: string): string {
+  // Strip bullet points, dashes, and numbered list markers that cause choppy TTS
+  // The agent LLM often reformats data into "- item\n- item" even when told not to.
+  // Strip these so TTS reads a clean flowing sentence.
+  text = text.replace(/^[\s]*[-–—•]\s+/gm, ""); // Leading dash/bullet: "- 1 flight..." → "1 flight..."
+  text = text.replace(/^[\s]*\d+\.\s+/gm, "");   // Numbered list: "1. First..." → "First..."
+  text = text.replace(/\n+/g, " ");               // Collapse newlines into spaces for flowing speech
+
   // Strip markdown-style formatting that causes weird TTS
   text = text.replace(/\*\*(.*?)\*\*/g, "$1"); // **bold** → bold
   text = text.replace(/\*(.*?)\*/g, "$1");      // *italic* → italic
