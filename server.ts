@@ -866,6 +866,12 @@ app.post("/api/demo-reset", async (_req, res) => {
 // CRITICAL: Agent API DELETE must NOT have a body or Content-Type header
 app.delete("/api/agent/session/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
+
+  // ── Demo Reset: ALWAYS revert booking to pre-upgrade state ──────────
+  // Fire reset regardless of whether session DELETE succeeds, because
+  // the Agent API often returns 400 "arg2 must not be null" on session end.
+  resetDemoBooking().catch(err => console.error("[demo-reset] Background reset failed:", err.message));
+
   try {
     const { accessToken } = await getAccessToken();
     const sfRes = await fetch(
@@ -876,20 +882,17 @@ app.delete("/api/agent/session/:sessionId", async (req, res) => {
     if (!sfRes.ok) {
       const err = await sfRes.text();
       console.error("[session] End failed:", sfRes.status, err);
-      return res.status(sfRes.status).json({ error: "Failed to end session", detail: err });
+      // Still return success to the client — the session is effectively over
+      // and the demo reset has already been triggered.
+      return res.json({ success: true, warning: "Session cleanup had issues but demo was reset" });
     }
 
     console.log("[session] Ended:", sessionId);
-
-    // ── Demo Reset: revert booking to pre-upgrade state ──────────
-    // ProcessSeatUpgradeService permanently modifies Booking__c (Cabin, Seat)
-    // and Seat_Map__c records. Reset them so the upgrade demo works every session.
-    resetDemoBooking().catch(err => console.error("[demo-reset] Background reset failed:", err.message));
-
     return res.json({ success: true });
   } catch (err: any) {
     console.error("[session] Error:", err.message);
-    return res.status(500).json({ error: err.message });
+    // Even on error, return success since demo reset was triggered
+    return res.json({ success: true, warning: "Session end failed but demo was reset" });
   }
 });
 
