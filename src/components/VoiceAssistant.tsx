@@ -43,6 +43,29 @@ function parseResponseToCard(text: string): ParsedCard {
   if (isUpgradeContext) {
     const cabinMatch = text.match(/(first class|delta one|comfort\+|premium select)/i);
     const seatMatch = text.match(/seat\s*(\w+)/i);
+
+    // Extract ALL dollar amounts and pick the largest (cash price), not the first (copay)
+    // e.g. "15,000 SkyMiles + $39 copay, or $189 cash" → show "$189" not "$39"
+    const allPrices = [...text.matchAll(/\$([\d,]+)/g)].map(m => ({
+      raw: m[1],
+      value: parseInt(m[1].replace(/,/g, ""), 10),
+    }));
+    const cashPrice = allPrices.length > 0
+      ? allPrices.reduce((max, p) => p.value > max.value ? p : max)
+      : null;
+    // Also detect miles+copay combo for richer display
+    const milesAndCopay = text.match(/([\d,]+)\s*(?:sky)?miles\s*\+?\s*\$(\d[\d,]*)/i);
+
+    let costDisplay = "";
+    if (milesAndCopay && cashPrice && parseInt(milesAndCopay[2].replace(/,/g, ""), 10) !== cashPrice.value) {
+      // Show both options: "15K miles + $39 or $189 cash"
+      costDisplay = `${milesAndCopay[1]} miles + $${milesAndCopay[2]} or $${cashPrice.raw}`;
+    } else if (cashPrice) {
+      costDisplay = `$${cashPrice.raw}`;
+    } else if (milesMatch) {
+      costDisplay = `${milesMatch[1]} miles`;
+    }
+
     return {
       type: "upgrade",
       headline: lower.includes("confirmed") || lower.includes("complete")
@@ -53,7 +76,7 @@ function parseResponseToCard(text: string): ParsedCard {
       upgrade: {
         cabin: cabinMatch?.[1] || "Premium cabin",
         seat: seatMatch?.[1] || "",
-        cost: priceMatch ? `$${priceMatch[1]}` : milesMatch ? `${milesMatch[1]} miles` : "",
+        cost: costDisplay,
       },
       chips: ["View seat map", "Upgrade another flight", "Check status"],
     };
@@ -531,9 +554,23 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               }
 
               // Detect if agent is asking for a code/number → set STT context for next turn
+              // IMPORTANT: Upgrade responses often mention "SkyMiles" (e.g. "15,000 SkyMiles + $39")
+              // which would incorrectly trigger mileage-number context. Check upgrade context FIRST
+              // and skip number-biased contexts when the response is about upgrades/pricing.
               if (nativeRef.current) {
                 const lower = response.toLowerCase();
-                if (lower.includes("skymiles") || lower.includes("mileage number") || lower.includes("membership number") || lower.includes("loyalty number") || lower.includes("miles number")) {
+                const isUpgradeResponse = lower.includes("upgrade") || lower.includes("first class") ||
+                  lower.includes("delta one") || lower.includes("comfort+") || lower.includes("premium select") ||
+                  lower.includes("would you like to proceed") || lower.includes("confirm the upgrade") ||
+                  (lower.includes("$") && (lower.includes("miles") || lower.includes("skymiles")));
+                const isAskingForNumber = lower.includes("provide your") || lower.includes("what is your") ||
+                  lower.includes("enter your") || lower.includes("need your") || lower.includes("can i have your");
+
+                if (isUpgradeResponse && !isAskingForNumber) {
+                  // Upgrade pricing/confirmation — don't bias STT toward numbers
+                  nativeRef.current.sttContext = null;
+                  console.log("[voice] STT context cleared (upgrade response, not asking for number)");
+                } else if (isAskingForNumber && (lower.includes("skymiles") || lower.includes("mileage number") || lower.includes("membership number") || lower.includes("loyalty number") || lower.includes("miles number"))) {
                   nativeRef.current.sttContext = "mileage-number";
                   console.log("[voice] STT context set: mileage-number");
                 } else if (lower.includes("confirmation") || lower.includes("booking code") || lower.includes("pnr") || lower.includes("record locator")) {
