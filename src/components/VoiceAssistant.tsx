@@ -174,6 +174,41 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const prewarmedAgentRef = useRef<AgentforceSession | null>(null);
   const turnCounter = useRef(0);
 
+  // ─── Topic tracking for session reset on topic switch ─────────
+  // The Agentforce ReAct planner maintains an execution plan within a session.
+  // Once it starts executing the Loyalty topic's plan, it won't re-classify
+  // even when the user's intent clearly changes (e.g. from miles → upgrade).
+  // We detect topic changes client-side and reset the session to force
+  // the planner to classify the new message from scratch.
+  const currentTopicRef = useRef<string>("none");
+
+  function detectTopic(text: string): string {
+    const lower = text.toLowerCase();
+    // Upgrade keywords — check first (upgrade mentions can include "miles")
+    if (lower.includes("upgrade") || lower.includes("first class") ||
+        lower.includes("delta one") || lower.includes("comfort+") ||
+        lower.includes("premium select") || lower.includes("change my seat") ||
+        lower.includes("better seat") || lower.includes("seat map")) {
+      return "upgrade";
+    }
+    // Miles/loyalty keywords
+    if (lower.includes("missing miles") || lower.includes("miles not posted") ||
+        lower.includes("where are my miles") || lower.includes("skymiles") ||
+        lower.includes("loyalty") || lower.includes("mileage") ||
+        lower.includes("medallion") || lower.includes("points") ||
+        (lower.includes("miles") && lower.includes("account"))) {
+      return "loyalty";
+    }
+    // Flight info keywords
+    if (lower.includes("flight status") || lower.includes("delayed") ||
+        lower.includes("on time") || lower.includes("gate") ||
+        lower.includes("departure") || lower.includes("arrival") ||
+        lower.includes("boarding") || lower.includes("what time")) {
+      return "flight";
+    }
+    return "unknown";
+  }
+
   // ─── Pre-warm agent session on mount ──────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -244,6 +279,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       setStatus("Connecting...");
       setTurns([]);
       setCurrentUserText("");
+      currentTopicRef.current = "none"; // Reset topic tracking for fresh session
 
       if (nativeRef.current) { nativeRef.current.disconnect(); nativeRef.current = null; }
       if (agentRef.current) { agentRef.current.end(); agentRef.current = null; }
@@ -369,6 +405,32 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
             }
             setStatus("Processing...");
             setCurrentUserText(userText);
+
+            // ─── Topic switch detection + session reset ─────────────
+            // The Agentforce ReAct planner gets "stuck" in a topic's execution
+            // plan within a session. When the user switches from e.g. loyalty→upgrade,
+            // the planner continues the loyalty plan instead of re-classifying.
+            // Fix: detect topic changes and reset the session so the planner
+            // classifies the new message from scratch.
+            const detectedTopic = detectTopic(userText);
+            if (detectedTopic !== "unknown" &&
+                currentTopicRef.current !== "none" &&
+                detectedTopic !== currentTopicRef.current) {
+              console.log(`[voice] ⚡ Topic switch detected: ${currentTopicRef.current} → ${detectedTopic} — resetting Agentforce session`);
+              try {
+                await agentRef.current.end();
+                const freshAgent = new AgentforceSession();
+                await freshAgent.start();
+                agentRef.current = freshAgent;
+                console.log("[voice] Fresh agent session created for topic switch ✓");
+              } catch (resetErr: any) {
+                console.error("[voice] Session reset failed:", resetErr?.message);
+                return "I'm sorry, I had trouble switching topics. Could you try again?";
+              }
+            }
+            if (detectedTopic !== "unknown") {
+              currentTopicRef.current = detectedTopic;
+            }
 
             try {
               const timeoutPromise = new Promise<never>((_, reject) =>
