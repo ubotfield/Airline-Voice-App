@@ -131,7 +131,7 @@ export class NativeVoiceService {
 
   // Track consecutive empty STT results to provide "didn't catch that" feedback
   private consecutiveEmptySTT = 0;
-  private static readonly MAX_EMPTY_STT_BEFORE_FEEDBACK = 2; // After 2 empty results, show feedback
+  private static readonly MAX_EMPTY_STT_BEFORE_FEEDBACK = 4; // After 4 empty results, show feedback (increased from 2 to tolerate echo-discards)
 
   // Barge-in: user can interrupt playback by speaking
   private bargeInDetectionInterval: number | null = null;
@@ -1002,8 +1002,11 @@ export class NativeVoiceService {
           dbg("Sending re-prompt to agent after multiple empty STT results");
           await this.routeToAgent("I'm sorry, could you please repeat that?");
         } else {
+          // Brief delay before retrying — if STT returned empty due to echo/hallucination
+          // filter, the echo may still be lingering. 800ms helps it dissipate.
           this.pipelineState = "idle";
-          this.scheduleNextChunk();
+          await new Promise(r => setTimeout(r, 800));
+          if (this._isConnected && this.shouldRestart) this.scheduleNextChunk();
         }
       }
     } catch (sttErr: any) {
@@ -1164,9 +1167,11 @@ export class NativeVoiceService {
 
     // POST-TTS SETTLING DELAY: Pause for residual speaker vibration to stop.
     // With mic tracks muted during playback, this covers the physical
-    // speaker-to-mic acoustic path settling. 500ms prevents Gemini STT from
-    // transcribing residual TTS echo as phantom text (e.g. "[Upbeat music]").
-    await new Promise(r => setTimeout(r, 500));
+    // speaker-to-mic acoustic path settling. 1500ms prevents Gemini STT from
+    // transcribing residual TTS echo as phantom text (e.g. "[Upbeat music]
+    // I'd like to change my flight"). Increased from 500ms — on mobile devices
+    // the speaker-to-mic bleed persists for 1-2 seconds after TTS completes.
+    await new Promise(r => setTimeout(r, 1500));
     if (!this._isConnected || !this.shouldRestart) return;
 
     // CRITICAL: Unmute mic tracks AFTER the settling delay.

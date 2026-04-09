@@ -1102,17 +1102,36 @@ app.post("/api/stt", async (req, res) => {
 
     // STT hallucination filter — Gemini sometimes transcribes TTS echo or ambient noise
     // as phantom annotations like "[Upbeat music]", "[Background noise]", etc.
+    // Also catches the persistent Gemini phantom where TTS echo is transcribed as
+    // "[Upbeat music]\nI'd like to change my flight." repeatedly.
     let filteredRaw = rawText.replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
+
+    // Phase 1: If raw text contained bracket annotations (e.g. "[Upbeat music]"),
+    // the remaining text is likely TTS echo hallucination. If it's a short generic phrase,
+    // discard the entire thing.
+    const hadBracketAnnotation = /\[.*?\]/.test(rawText);
+
     const hallucinationPatterns = [
       /^(upbeat|background|ambient)\s*(music|noise|sounds?)\s*$/i,
       /^music$/i, /^applause$/i, /^silence$/i, /^inaudible$/i,
       /^thank you\.?\s*$/i, /^thanks\.?\s*$/i, /^you$/i, /^bye\.?\s*$/i,
-      // Persistent Gemini phantom: TTS echo transcribed as flight-change requests
-      /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
-      /^(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
-      /^i\s*want\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
+      // Persistent Gemini phantom: TTS echo transcribed as flight-change/upgrade requests
+      /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      /^(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      /^i\s*want\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
     ];
-    if (hallucinationPatterns.some(p => p.test(filteredRaw)) || filteredRaw.length < 2) {
+
+    // Additional patterns: if the raw text had a bracket annotation like [Upbeat music],
+    // and what remains after stripping is very short or a generic phrase, discard everything.
+    // This catches cases like "[Upbeat music]\nI'd like to change my flight."
+    const echoAfterAnnotation = hadBracketAnnotation && filteredRaw.length < 60 && (
+      hallucinationPatterns.some(p => p.test(filteredRaw)) ||
+      /^i'?d?\s*like\s*to\b/i.test(filteredRaw) ||
+      /^i\s*want\s*to\b/i.test(filteredRaw) ||
+      filteredRaw.length < 5
+    );
+
+    if (hallucinationPatterns.some(p => p.test(filteredRaw)) || filteredRaw.length < 2 || echoAfterAnnotation) {
       console.log(`[stt] ⚠️ Hallucination filter: "${rawText}" → discarding`);
       return res.json({ text: "", debug: { elapsed, finishReason, model: sttModel, mime: normalizedMime, filtered: true, rawText } });
     }
