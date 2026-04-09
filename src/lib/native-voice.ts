@@ -117,7 +117,7 @@ export class NativeVoiceService {
   private silenceStartTime: number | null = null;
   private speechDetected = false;
   private static readonly SILENCE_THRESHOLD = 0.015; // Volume below this = silence (lowered from 0.02 to catch soft-spoken numbers)
-  private static readonly SILENCE_DURATION_MS = 1500; // Wait 1.5s of silence before stopping (was 800ms — too aggressive for digit sequences)
+  private static readonly SILENCE_DURATION_MS = 1200; // Wait 1.2s of silence before stopping (was 1.5s — shaving 300ms for faster responsiveness)
   private static readonly MAX_RECORD_DURATION_MS = 10000; // Hard cap at 10s (was 8s)
   private static readonly MIN_SPEECH_DURATION_MS = 600; // Minimum speech before stopping (was 300ms — too short for numbers)
 
@@ -151,10 +151,20 @@ export class NativeVoiceService {
   // e.g., "mileage-number", "confirmation-code", "flight-number"
   public sttContext: string | null = null;
 
+  /** Set the last agent response text for echo detection. Called by the UI layer. */
+  public setLastAgentResponse(text: string): void {
+    this.lastAgentResponse = text;
+  }
+
   // Track the last user message text to detect echo-induced duplicates.
   // If STT transcribes text identical to the last user message, it's likely
   // a TTS echo being picked up by the mic — discard it.
   private lastUserMessage: string = "";
+
+  // Track the last agent response to detect agent-speech echo.
+  // If the mic captures residual TTS audio and STT transcribes words from the
+  // agent's own response, discard it.
+  private lastAgentResponse: string = "";
 
   get isConnected(): boolean {
     return this._isConnected;
@@ -1103,6 +1113,39 @@ export class NativeVoiceService {
         if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") this.mediaRecorder.stop();
       } catch { /* ignore */ }
     }
+
+    // CRITICAL: Mute mic tracks during TTS playback to prevent echo capture.
+    // This is the definitive fix for the echo problem — even with echoCancellation enabled,
+    // iOS Safari PWA mode leaks residual TTS audio into the mic, which STT then transcribes
+    // as ghost text (e.g., "12345" from the previous turn). By disabling the mic track,
+    // no audio is captured at all during playback, eliminating echo at the source.
+    this.muteMicTracks();
+  }
+
+  /** Disable mic tracks to prevent any audio capture (echo prevention). */
+  private muteMicTracks(): void {
+    const tracks = this.mediaStream?.getAudioTracks();
+    if (tracks) {
+      for (const track of tracks) {
+        if (track.enabled) {
+          track.enabled = false;
+          dbg("Mic track MUTED (echo prevention)");
+        }
+      }
+    }
+  }
+
+  /** Re-enable mic tracks after TTS playback completes. */
+  private unmuteMicTracks(): void {
+    const tracks = this.mediaStream?.getAudioTracks();
+    if (tracks) {
+      for (const track of tracks) {
+        if (!track.enabled) {
+          track.enabled = true;
+          dbg("Mic track UNMUTED");
+        }
+      }
+    }
   }
 
   private async resumeListening(): Promise<void> {
@@ -1114,13 +1157,15 @@ export class NativeVoiceService {
     this.lastRecognitionActivity = Date.now(); // reset watchdog
     this.callbacks.onStatusChange?.("Listening...");
 
-    // POST-TTS SETTLING DELAY: Brief pause for echo cancellation to settle.
-    // Reduced from 500ms → 250ms since the session-reset mechanism now handles
-    // topic switching. This just needs to suppress the worst echo artifacts,
-    // not prevent all ghost transcriptions. 250ms keeps the app responsive
-    // while still giving echo cancellation time to kick in.
-    await new Promise(r => setTimeout(r, 250));
+    // POST-TTS SETTLING DELAY: Brief pause for residual speaker vibration to stop.
+    // With mic tracks muted during playback, this only needs to cover the physical
+    // speaker-to-mic acoustic path settling. 150ms is enough.
+    await new Promise(r => setTimeout(r, 150));
     if (!this._isConnected || !this.shouldRestart) return;
+
+    // CRITICAL: Unmute mic tracks AFTER the settling delay.
+    // Tracks were muted in pauseListening() to prevent echo capture during TTS.
+    this.unmuteMicTracks();
 
     if (this.sttMode === "speech-recognition") {
       // Fix 3: Stop any existing recognition before restarting — prevents
@@ -1168,14 +1213,54 @@ export class NativeVoiceService {
   private async routeToAgent(userText: string): Promise<void> {
     if (this.pipelineState === "speaking") return;
 
-    // ECHO DUPLICATE GUARD: If the transcribed text is identical to the last
-    // user message we just sent, it's almost certainly TTS echo being picked
-    // up by the mic and transcribed. Discard it and keep listening.
-    if (userText && this.lastUserMessage && userText.trim().toLowerCase() === this.lastUserMessage.trim().toLowerCase()) {
-      dbg(`⚠️ Echo duplicate detected: "${userText}" matches last message — discarding`);
-      this.pipelineState = "idle";
-      this.scheduleNextChunk();
-      return;
+    // ══════════════════════════════════════════════════════════════
+    // MULTI-LAYER ECHO GUARD — prevents ghost transcriptions from reaching the agent
+    // ══════════════════════════════════════════════════════════════
+
+    const normalized = userText.trim().toLowerCase();
+    const digitsOnly = normalized.replace(/\D/g, "");
+
+    // Layer 1: Exact match with last user message
+    if (normalized && this.lastUserMessage) {
+      const lastNorm = this.lastUserMessage.trim().toLowerCase();
+      if (normalized === lastNorm) {
+        dbg(`⚠️ Echo guard L1 (exact match): "${userText}" = last user msg — discarding`);
+        this.pipelineState = "idle";
+        this.scheduleNextChunk();
+        return;
+      }
+      // Layer 2: Digits-only match — catches "12345" vs "1 2 3 4 5" vs "12,345"
+      const lastDigits = lastNorm.replace(/\D/g, "");
+      if (digitsOnly.length >= 3 && digitsOnly === lastDigits) {
+        dbg(`⚠️ Echo guard L2 (digit match): "${userText}" digits="${digitsOnly}" = last msg digits — discarding`);
+        this.pipelineState = "idle";
+        this.scheduleNextChunk();
+        return;
+      }
+    }
+
+    // Layer 3: Agent response echo — if STT picked up the agent's own TTS output,
+    // it may transcribe fragments of the agent's last response. Check if the
+    // transcribed text is a substantial substring of the agent's reply.
+    if (normalized && this.lastAgentResponse) {
+      const agentLower = this.lastAgentResponse.toLowerCase();
+      // Short transcriptions (< 30 chars) that appear in agent's response are likely echo
+      if (normalized.length < 30 && normalized.length >= 3 && agentLower.includes(normalized)) {
+        dbg(`⚠️ Echo guard L3 (agent echo): "${userText}" found in agent response — discarding`);
+        this.pipelineState = "idle";
+        this.scheduleNextChunk();
+        return;
+      }
+      // Digits from agent response — e.g., agent said "12345 miles" and mic echoed "12345"
+      if (digitsOnly.length >= 3) {
+        const agentDigits = agentLower.replace(/\D/g, "");
+        if (agentDigits.includes(digitsOnly)) {
+          dbg(`⚠️ Echo guard L3 (agent digit echo): digits "${digitsOnly}" found in agent response — discarding`);
+          this.pipelineState = "idle";
+          this.scheduleNextChunk();
+          return;
+        }
+      }
     }
 
     this.pipelineState = "speaking";
@@ -1737,6 +1822,9 @@ export class NativeVoiceService {
     this._isConnected = false;
     this.greetingDone = false;
     this.pipelineState = "idle";
+
+    // Ensure mic tracks are unmuted before stopping (safety — prevents stale muted state)
+    this.unmuteMicTracks();
 
     this.stopListeningWatchdog();
     if (this.recognitionHealthTimer) { clearTimeout(this.recognitionHealthTimer); this.recognitionHealthTimer = null; }

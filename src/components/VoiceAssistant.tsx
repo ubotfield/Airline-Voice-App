@@ -525,6 +525,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
               const response = streamResponse;
 
+              // Feed agent response to echo guard so mic echoes can be detected
+              if (nativeRef.current) {
+                nativeRef.current.setLastAgentResponse(response);
+              }
+
               // Detect if agent is asking for a code/number → set STT context for next turn
               if (nativeRef.current) {
                 const lower = response.toLowerCase();
