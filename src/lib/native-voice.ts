@@ -123,9 +123,11 @@ export class NativeVoiceService {
 
   // Minimum peak volume during a recording chunk to consider it real speech.
   // Recordings with peak below this are discarded as echo/silence/ambient noise.
-  // This prevents post-TTS echo from being sent to STT (which would hallucinate
-  // text from the previous turn, keeping the agent stuck in the wrong topic).
-  private static readonly MIN_PEAK_VOLUME_FOR_STT = 0.025;
+  // Lowered from 0.025 → 0.012: the higher value was discarding soft-spoken
+  // numbers like "12345" because short digit utterances are often quiet.
+  // The session-reset mechanism now handles the topic-switching problem,
+  // so this gate only needs to catch true silence/noise, not echo.
+  private static readonly MIN_PEAK_VOLUME_FOR_STT = 0.012;
 
   // Track consecutive empty STT results to provide "didn't catch that" feedback
   private consecutiveEmptySTT = 0;
@@ -1112,13 +1114,12 @@ export class NativeVoiceService {
     this.lastRecognitionActivity = Date.now(); // reset watchdog
     this.callbacks.onStatusChange?.("Listening...");
 
-    // POST-TTS SETTLING DELAY: Wait briefly before starting recording.
-    // After TTS playback ends, the mic still picks up residual speaker echo/reverb
-    // for ~300-500ms, even with echoCancellation enabled. Without this delay, the
-    // recorder captures the echo, STT transcribes it as gibberish or previous context
-    // (e.g. the mileage number "12345"), and the agent stays in the wrong topic.
-    // 500ms is enough for echo cancellation to fully suppress the trailing audio.
-    await new Promise(r => setTimeout(r, 500));
+    // POST-TTS SETTLING DELAY: Brief pause for echo cancellation to settle.
+    // Reduced from 500ms → 250ms since the session-reset mechanism now handles
+    // topic switching. This just needs to suppress the worst echo artifacts,
+    // not prevent all ghost transcriptions. 250ms keeps the app responsive
+    // while still giving echo cancellation time to kick in.
+    await new Promise(r => setTimeout(r, 250));
     if (!this._isConnected || !this.shouldRestart) return;
 
     if (this.sttMode === "speech-recognition") {
