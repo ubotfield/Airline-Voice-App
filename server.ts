@@ -796,17 +796,18 @@ async function handleSyncFallback(
 }
 
 // ─── Demo Booking Reset ──────────────────────────────────────────
-// After each session ends, revert the demo booking to Main Cabin / 28C
-// so the upgrade scenario works fresh every time.
-const DEMO_BOOKING_ID = process.env.DEMO_BOOKING_ID || "a2tHn000002qnDnIAI";
+// After each session ends, revert ALL demo bookings so every scenario
+// works fresh every time: upgrade (DL 204) and missing miles (DL 423).
+const DEMO_BOOKING_UPGRADE_ID = process.env.DEMO_BOOKING_ID || "a2tHn000002qnDnIAI";
+const DEMO_BOOKING_MILES_ID = "a2tHn000002qnDiIAI"; // DL 423 ATL→LAX (missing miles)
 const DEMO_CABIN_DEFAULT = "Main Cabin";
 const DEMO_SEAT_DEFAULT = "28C";
 
 async function resetDemoBooking(): Promise<void> {
   try {
-    // Step 1: Reset the booking record to Economy/Main Cabin
+    // Step 1: Reset upgrade booking (DL 204) to Main Cabin / 28C
     const patchRes = await sfFetch(
-      `/services/data/v62.0/sobjects/Booking__c/${DEMO_BOOKING_ID}`,
+      `/services/data/v62.0/sobjects/Booking__c/${DEMO_BOOKING_UPGRADE_ID}`,
       {
         method: "PATCH",
         body: JSON.stringify({
@@ -818,23 +819,35 @@ async function resetDemoBooking(): Promise<void> {
     );
     if (!patchRes.ok && patchRes.status !== 204) {
       const err = await patchRes.text();
-      console.error(`[demo-reset] Booking PATCH failed (${patchRes.status}):`, err);
-      return;
+      console.error(`[demo-reset] Upgrade booking PATCH failed (${patchRes.status}):`, err);
+    } else {
+      console.log(`[demo-reset] ✅ Upgrade booking reset to ${DEMO_CABIN_DEFAULT} / ${DEMO_SEAT_DEFAULT}`);
     }
-    console.log(`[demo-reset] ✅ Booking reset to ${DEMO_CABIN_DEFAULT} / ${DEMO_SEAT_DEFAULT}`);
 
-    // Step 2: Try to reset seat map entries (best effort)
-    // Find seat map records for the demo flight and reset them
+    // Step 2: Reset missing miles booking (DL 423) — set Miles_Credited__c = false
+    const milesRes = await sfFetch(
+      `/services/data/v62.0/sobjects/Booking__c/${DEMO_BOOKING_MILES_ID}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ Miles_Credited__c: false }),
+      }
+    );
+    if (!milesRes.ok && milesRes.status !== 204) {
+      const err = await milesRes.text();
+      console.error(`[demo-reset] Miles booking PATCH failed (${milesRes.status}):`, err);
+    } else {
+      console.log("[demo-reset] ✅ Miles booking reset to uncredited (DL 423)");
+    }
+
+    // Step 3: Try to reset seat map entries (best effort)
     try {
       const seatQuery = encodeURIComponent(
-        `SELECT Id, Seat_Number__c, Status__c, Cabin__c FROM Seat_Map__c WHERE Flight__c IN (SELECT Flight__c FROM Booking__c WHERE Id = '${DEMO_BOOKING_ID}') AND (Seat_Number__c = '${DEMO_SEAT_DEFAULT}' OR Seat_Number__c = '2A') LIMIT 10`
+        `SELECT Id, Seat_Number__c, Status__c, Cabin__c FROM Seat_Map__c WHERE Flight__c IN (SELECT Flight__c FROM Booking__c WHERE Id = '${DEMO_BOOKING_UPGRADE_ID}') AND (Seat_Number__c = '${DEMO_SEAT_DEFAULT}' OR Seat_Number__c = '2A') LIMIT 10`
       );
       const seatRes = await sfFetch(`/services/data/v62.0/query/?q=${seatQuery}`);
       if (seatRes.ok) {
         const seatData = await seatRes.json();
         for (const seat of (seatData.records || [])) {
-          // Mark the old economy seat (28C) as Occupied (it's the demo passenger's seat)
-          // Mark any upgraded seat (like 2A) as Available
           const newStatus = seat.Seat_Number__c === DEMO_SEAT_DEFAULT ? "Occupied" : "Available";
           if (seat.Status__c !== newStatus) {
             await sfFetch(`/services/data/v62.0/sobjects/Seat_Map__c/${seat.Id}`, {
