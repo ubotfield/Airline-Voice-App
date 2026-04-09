@@ -795,6 +795,74 @@ async function handleSyncFallback(
   }
 }
 
+// ─── Demo Booking Reset ──────────────────────────────────────────
+// After each session ends, revert the demo booking to Main Cabin / 28C
+// so the upgrade scenario works fresh every time.
+const DEMO_BOOKING_ID = process.env.DEMO_BOOKING_ID || "a2tHn000002qnDnIAI";
+const DEMO_CABIN_DEFAULT = "Main Cabin";
+const DEMO_SEAT_DEFAULT = "28C";
+
+async function resetDemoBooking(): Promise<void> {
+  try {
+    // Step 1: Reset the booking record to Economy/Main Cabin
+    const patchRes = await sfFetch(
+      `/services/data/v62.0/sobjects/Booking__c/${DEMO_BOOKING_ID}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          Cabin__c: DEMO_CABIN_DEFAULT,
+          Seat__c: DEMO_SEAT_DEFAULT,
+          Boarding_Group__c: "Group 5",
+        }),
+      }
+    );
+    if (!patchRes.ok && patchRes.status !== 204) {
+      const err = await patchRes.text();
+      console.error(`[demo-reset] Booking PATCH failed (${patchRes.status}):`, err);
+      return;
+    }
+    console.log(`[demo-reset] ✅ Booking reset to ${DEMO_CABIN_DEFAULT} / ${DEMO_SEAT_DEFAULT}`);
+
+    // Step 2: Try to reset seat map entries (best effort)
+    // Find seat map records for the demo flight and reset them
+    try {
+      const seatQuery = encodeURIComponent(
+        `SELECT Id, Seat_Number__c, Status__c, Cabin__c FROM Seat_Map__c WHERE Flight__c IN (SELECT Flight__c FROM Booking__c WHERE Id = '${DEMO_BOOKING_ID}') AND (Seat_Number__c = '${DEMO_SEAT_DEFAULT}' OR Seat_Number__c = '2A') LIMIT 10`
+      );
+      const seatRes = await sfFetch(`/services/data/v62.0/query/?q=${seatQuery}`);
+      if (seatRes.ok) {
+        const seatData = await seatRes.json();
+        for (const seat of (seatData.records || [])) {
+          // Mark the old economy seat (28C) as Occupied (it's the demo passenger's seat)
+          // Mark any upgraded seat (like 2A) as Available
+          const newStatus = seat.Seat_Number__c === DEMO_SEAT_DEFAULT ? "Occupied" : "Available";
+          if (seat.Status__c !== newStatus) {
+            await sfFetch(`/services/data/v62.0/sobjects/Seat_Map__c/${seat.Id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ Status__c: newStatus }),
+            });
+            console.log(`[demo-reset] Seat ${seat.Seat_Number__c}: ${seat.Status__c} → ${newStatus}`);
+          }
+        }
+      }
+    } catch (seatErr: any) {
+      console.log("[demo-reset] Seat map reset skipped:", seatErr.message);
+    }
+  } catch (err: any) {
+    console.error("[demo-reset] Error:", err.message);
+  }
+}
+
+// Also expose as an API endpoint for manual reset
+app.post("/api/demo-reset", async (_req, res) => {
+  try {
+    await resetDemoBooking();
+    res.json({ success: true, message: `Booking reset to ${DEMO_CABIN_DEFAULT} / ${DEMO_SEAT_DEFAULT}` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // CRITICAL: Agent API DELETE must NOT have a body or Content-Type header
 app.delete("/api/agent/session/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
@@ -812,6 +880,12 @@ app.delete("/api/agent/session/:sessionId", async (req, res) => {
     }
 
     console.log("[session] Ended:", sessionId);
+
+    // ── Demo Reset: revert booking to pre-upgrade state ──────────
+    // ProcessSeatUpgradeService permanently modifies Booking__c (Cabin, Seat)
+    // and Seat_Map__c records. Reset them so the upgrade demo works every session.
+    resetDemoBooking().catch(err => console.error("[demo-reset] Background reset failed:", err.message));
+
     return res.json({ success: true });
   } catch (err: any) {
     console.error("[session] Error:", err.message);
@@ -1017,6 +1091,10 @@ app.post("/api/stt", async (req, res) => {
       /^(upbeat|background|ambient)\s*(music|noise|sounds?)\s*$/i,
       /^music$/i, /^applause$/i, /^silence$/i, /^inaudible$/i,
       /^thank you\.?\s*$/i, /^thanks\.?\s*$/i, /^you$/i, /^bye\.?\s*$/i,
+      // Persistent Gemini phantom: TTS echo transcribed as flight-change requests
+      /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
+      /^(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
+      /^i\s*want\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
     ];
     if (hallucinationPatterns.some(p => p.test(filteredRaw)) || filteredRaw.length < 2) {
       console.log(`[stt] ⚠️ Hallucination filter: "${rawText}" → discarding`);

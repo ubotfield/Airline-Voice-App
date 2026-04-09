@@ -1239,6 +1239,10 @@ export class NativeVoiceService {
       /^thanks\.?\s*$/i,
       /^you$/i,
       /^bye\.?\s*$/i,
+      // Persistent Gemini phantom: TTS echo transcribed as flight-change requests
+      /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
+      /^(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
+      /^i\s*want\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
     ];
     if (hallucinationPhrases.some(p => p.test(cleanedText))) {
       dbg(`⚠️ STT hallucination filter: "${userText}" → discarding (matched hallucination phrase)`);
