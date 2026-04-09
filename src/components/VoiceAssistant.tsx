@@ -27,6 +27,8 @@ interface ParsedCard {
   miles?: { balance: string; tier: string; progress?: string };
   upgrade?: { cabin: string; seat: string; cost: string };
   chips: string[];
+  /** True when the agent is asking user to confirm an action (credit miles, process upgrade, etc.) */
+  needsConfirmation?: boolean;
 }
 
 function parseResponseToCard(text: string): ParsedCard {
@@ -66,6 +68,12 @@ function parseResponseToCard(text: string): ParsedCard {
       costDisplay = `${milesMatch[1]} miles`;
     }
 
+    // Detect if agent is asking for confirmation to proceed with upgrade
+    const isConfirmationPrompt = lower.includes("would you like to proceed") ||
+      lower.includes("shall i") || lower.includes("do you want to") ||
+      lower.includes("confirm the upgrade") || lower.includes("would you like me to") ||
+      lower.includes("ready to upgrade") || lower.includes("go ahead");
+
     return {
       type: "upgrade",
       headline: lower.includes("confirmed") || lower.includes("complete")
@@ -79,6 +87,7 @@ function parseResponseToCard(text: string): ParsedCard {
         cost: costDisplay,
       },
       chips: ["View seat map", "Upgrade another flight", "Check status"],
+      needsConfirmation: isConfirmationPrompt,
     };
   }
 
@@ -90,6 +99,12 @@ function parseResponseToCard(text: string): ParsedCard {
     lower.includes("miles credited") || lower.includes("mileage") ||
     (lower.includes("account") && lower.includes("miles"));
   if (isMilesContext) {
+    // Detect if agent is asking for confirmation to credit miles
+    const isConfirmationPrompt = lower.includes("would you like me to") ||
+      lower.includes("shall i credit") || lower.includes("do you want me to") ||
+      lower.includes("would you like to proceed") || lower.includes("go ahead and credit") ||
+      lower.includes("confirm") || lower.includes("shall i go ahead");
+
     return {
       type: "miles",
       headline: milesMatch ? "Your SkyMiles balance." : "Your loyalty status.",
@@ -99,6 +114,7 @@ function parseResponseToCard(text: string): ParsedCard {
         progress: "",
       },
       chips: ["Earn more miles", "Redeem miles", "Recent activity"],
+      needsConfirmation: isConfirmationPrompt,
     };
   }
 
@@ -196,6 +212,26 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const agentRef = useRef<AgentforceSession | null>(null);
   const prewarmedAgentRef = useRef<AgentforceSession | null>(null);
   const turnCounter = useRef(0);
+
+  // ─── Tap-to-confirm: send Yes/No directly to agent (bypasses STT) ───
+  // This injects the answer into NativeVoiceService's routeToAgent,
+  // which handles the full pipeline (agent call, TTS, card display, resume listening).
+  const confirmInFlight = useRef(false);
+
+  const sendConfirmation = async (answer: "Yes" | "No") => {
+    if (confirmInFlight.current || !agentRef.current?.isActive || !nativeRef.current) return;
+    confirmInFlight.current = true;
+    try {
+      nativeRef.current.sttContext = null; // Clear any STT context bias
+      // Inject the text directly into the voice pipeline
+      nativeRef.current.injectText(answer);
+    } catch (err: any) {
+      console.warn("[voice] Confirmation send failed:", err?.message);
+    } finally {
+      // Reset after a brief delay to prevent double-tap
+      setTimeout(() => { confirmInFlight.current = false; }, 2000);
+    }
+  };
 
   // ─── Topic tracking for session reset on topic switch ─────────
   // The Agentforce ReAct planner maintains an execution plan within a session.
@@ -887,6 +923,25 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {!card.miles.balance || card.miles.balance === "---" ? (
                           <p className="text-sm text-on-primary-container/80 font-medium leading-relaxed">{turn.agentText}</p>
                         ) : null}
+                        {/* Tap-to-confirm buttons — bypass STT for reliable confirmation */}
+                        {card.needsConfirmation && (
+                          <div className="flex gap-3 mt-4 pt-3 border-t border-white/10">
+                            <button
+                              onClick={() => sendConfirmation("Yes")}
+                              disabled={confirmInFlight.current}
+                              className="flex-1 bg-secondary text-white py-3 rounded-xl font-bold text-sm shadow-md hover:bg-secondary/90 active:scale-95 transition-all"
+                            >
+                              Yes, credit miles
+                            </button>
+                            <button
+                              onClick={() => sendConfirmation("No")}
+                              disabled={confirmInFlight.current}
+                              className="flex-1 bg-white/10 text-white py-3 rounded-xl font-bold text-sm hover:bg-white/20 active:scale-95 transition-all"
+                            >
+                              No thanks
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -903,6 +958,25 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         )}
                         {card.upgrade.cost && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
+                        )}
+                        {/* Tap-to-confirm buttons — bypass STT for reliable confirmation */}
+                        {card.needsConfirmation && (
+                          <div className="flex gap-3 mt-4 pt-3 border-t border-outline-variant/20">
+                            <button
+                              onClick={() => sendConfirmation("Yes")}
+                              disabled={confirmInFlight.current}
+                              className="flex-1 bg-secondary text-white py-3 rounded-xl font-bold text-sm shadow-md hover:bg-secondary/90 active:scale-95 transition-all"
+                            >
+                              Yes, upgrade
+                            </button>
+                            <button
+                              onClick={() => sendConfirmation("No")}
+                              disabled={confirmInFlight.current}
+                              className="flex-1 bg-surface-container-highest text-on-surface py-3 rounded-xl font-bold text-sm hover:bg-surface-container-high active:scale-95 transition-all"
+                            >
+                              No thanks
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}

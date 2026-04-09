@@ -1119,15 +1119,23 @@ app.post("/api/stt", async (req, res) => {
       /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
       /^(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
       /^i\s*want\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      // FIX 6: Additional echo patterns seen in production logs
+      /^(one moment|one moment please)\.?\s*$/i, // Echo of thinking filler
+      /^(how can i help|how may i help|how can i assist).*$/i, // Echo of agent greeting
+      /^(welcome to|welcome aboard|thank you for calling).*$/i, // Echo of greeting
     ];
 
     // Additional patterns: if the raw text had a bracket annotation like [Upbeat music],
     // and what remains after stripping is very short or a generic phrase, discard everything.
     // This catches cases like "[Upbeat music]\nI'd like to change my flight."
-    const echoAfterAnnotation = hadBracketAnnotation && filteredRaw.length < 60 && (
+    // FIX 6: Raised threshold from 60→80 chars and added more echo patterns.
+    // Long agent responses produce longer echo transcriptions that were slipping through.
+    const echoAfterAnnotation = hadBracketAnnotation && filteredRaw.length < 80 && (
       hallucinationPatterns.some(p => p.test(filteredRaw)) ||
       /^i'?d?\s*like\s*to\b/i.test(filteredRaw) ||
       /^i\s*want\s*to\b/i.test(filteredRaw) ||
+      /^(yes|no|okay|sure|yeah)\b/i.test(filteredRaw) || // Short affirmatives after annotation = echo
+      /^(would you|can you|do you)\b/i.test(filteredRaw) || // Echo of agent's own question
       filteredRaw.length < 5
     );
 

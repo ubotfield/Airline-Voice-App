@@ -129,9 +129,9 @@ export class NativeVoiceService {
   // so this gate only needs to catch true silence/noise, not echo.
   private static readonly MIN_PEAK_VOLUME_FOR_STT = 0.012;
 
-  // Track consecutive empty STT results to provide "didn't catch that" feedback
+  // Track consecutive empty STT results to show visual feedback
   private consecutiveEmptySTT = 0;
-  private static readonly MAX_EMPTY_STT_BEFORE_FEEDBACK = 4; // After 4 empty results, show feedback (increased from 2 to tolerate echo-discards)
+  private static readonly MAX_EMPTY_STT_BEFORE_FEEDBACK = 6; // After 6 empty results, show visual prompt (increased from 4 — long TTS causes many echo-discards)
 
   // Barge-in: user can interrupt playback by speaking
   private bargeInDetectionInterval: number | null = null;
@@ -154,6 +154,18 @@ export class NativeVoiceService {
   /** Set the last agent response text for echo detection. Called by the UI layer. */
   public setLastAgentResponse(text: string): void {
     this.lastAgentResponse = text;
+  }
+
+  /**
+   * Inject text directly into the voice pipeline as if the user spoke it.
+   * Used by tap-to-confirm buttons to bypass STT entirely.
+   * The text goes through routeToAgent which handles agent call, TTS, resume listening.
+   */
+  public injectText(text: string): void {
+    if (!this._isConnected) return;
+    dbg(`injectText: "${text}" — bypassing STT`);
+    this.consecutiveEmptySTT = 0; // Reset empty counter
+    this.routeToAgent(text);
   }
 
   // Track the last user message text to detect echo-induced duplicates.
@@ -996,16 +1008,27 @@ export class NativeVoiceService {
         this.consecutiveEmptySTT++;
         dbg(`⚠️ STT returned empty text (${this.consecutiveEmptySTT} consecutive) — recycling`);
         if (this.consecutiveEmptySTT >= NativeVoiceService.MAX_EMPTY_STT_BEFORE_FEEDBACK) {
-          // Send a "please repeat" prompt to the agent so it re-asks the question
+          // FIX 3: Silent retry — DON'T send "repeat that" to the agent.
+          // Sending a re-prompt causes the agent to re-speak its entire long response,
+          // which creates MORE echo → MORE discards → infinite loop.
+          // Instead: show a visual prompt and keep listening. User can tap confirm
+          // buttons or speak louder/closer to the mic.
           this.consecutiveEmptySTT = 0;
-          this.callbacks.onStatusChange?.("Didn't catch that...");
-          dbg("Sending re-prompt to agent after multiple empty STT results");
-          await this.routeToAgent("I'm sorry, could you please repeat that?");
-        } else {
-          // Brief delay before retrying — if STT returned empty due to echo/hallucination
-          // filter, the echo may still be lingering. 800ms helps it dissipate.
+          this.callbacks.onStatusChange?.("Didn't catch that — try again or tap a button");
+          dbg("Silent retry after multiple empty STT — NOT re-prompting agent (prevents echo loop)");
           this.pipelineState = "idle";
-          await new Promise(r => setTimeout(r, 800));
+          // Longer pause before resuming — give echo more time to fully dissipate
+          await new Promise(r => setTimeout(r, 2000));
+          if (this._isConnected && this.shouldRestart) this.scheduleNextChunk();
+        } else {
+          // FIX 5: Escalating retry delays — instead of flat 800ms, increase delay
+          // with each consecutive empty result. Early empties might just be brief silence;
+          // repeated empties mean persistent echo that needs more time to dissipate.
+          const retryDelays = [800, 1200, 1800, 2500, 3000, 3500];
+          const delay = retryDelays[Math.min(this.consecutiveEmptySTT - 1, retryDelays.length - 1)];
+          this.pipelineState = "idle";
+          dbg(`Empty STT retry delay: ${delay}ms (attempt ${this.consecutiveEmptySTT})`);
+          await new Promise(r => setTimeout(r, delay));
           if (this._isConnected && this.shouldRestart) this.scheduleNextChunk();
         }
       }
@@ -1165,13 +1188,19 @@ export class NativeVoiceService {
     this.lastRecognitionActivity = Date.now(); // reset watchdog
     this.callbacks.onStatusChange?.("Listening...");
 
-    // POST-TTS SETTLING DELAY: Pause for residual speaker vibration to stop.
-    // With mic tracks muted during playback, this covers the physical
-    // speaker-to-mic acoustic path settling. 1500ms prevents Gemini STT from
-    // transcribing residual TTS echo as phantom text (e.g. "[Upbeat music]
-    // I'd like to change my flight"). Increased from 500ms — on mobile devices
-    // the speaker-to-mic bleed persists for 1-2 seconds after TTS completes.
-    await new Promise(r => setTimeout(r, 1500));
+    // FIX 4: ADAPTIVE POST-TTS SETTLING DELAY.
+    // Scale cooldown with estimated speech duration — longer responses produce
+    // more residual speaker echo that takes more time to dissipate.
+    // Short responses (~1-2 sentences): 1500ms is sufficient.
+    // Long responses (5+ sentences, upgrade prompts): need 3000-3500ms.
+    // Estimate: ~150ms per word spoken at normal TTS pace.
+    const lastResponseLength = this.lastAgentResponse?.length || 0;
+    const estimatedWords = lastResponseLength / 5; // ~5 chars per word
+    const estimatedSpeechMs = estimatedWords * 150; // ~150ms per word
+    // Cooldown: base 1500ms, scaled up to 3500ms for long responses
+    const cooldownMs = Math.min(3500, Math.max(1500, 1000 + estimatedSpeechMs * 0.15));
+    dbg(`Post-TTS cooldown: ${Math.round(cooldownMs)}ms (response ~${Math.round(estimatedWords)} words)`);
+    await new Promise(r => setTimeout(r, cooldownMs));
     if (!this._isConnected || !this.shouldRestart) return;
 
     // CRITICAL: Unmute mic tracks AFTER the settling delay.
