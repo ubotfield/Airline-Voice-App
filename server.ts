@@ -1010,8 +1010,24 @@ app.post("/api/stt", async (req, res) => {
     const rawText = candidate?.content?.parts?.[0]?.text?.trim() || "";
     const elapsed = Date.now() - sttStart;
 
+    // STT hallucination filter — Gemini sometimes transcribes TTS echo or ambient noise
+    // as phantom annotations like "[Upbeat music]", "[Background noise]", etc.
+    let filteredRaw = rawText.replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
+    const hallucinationPatterns = [
+      /^(upbeat|background|ambient)\s*(music|noise|sounds?)\s*$/i,
+      /^music$/i, /^applause$/i, /^silence$/i, /^inaudible$/i,
+      /^thank you\.?\s*$/i, /^thanks\.?\s*$/i, /^you$/i, /^bye\.?\s*$/i,
+    ];
+    if (hallucinationPatterns.some(p => p.test(filteredRaw)) || filteredRaw.length < 2) {
+      console.log(`[stt] ⚠️ Hallucination filter: "${rawText}" → discarding`);
+      return res.json({ text: "", debug: { elapsed, finishReason, model: sttModel, mime: normalizedMime, filtered: true, rawText } });
+    }
+    if (filteredRaw !== rawText) {
+      console.log(`[stt] Hallucination filter cleaned: "${rawText}" → "${filteredRaw}"`);
+    }
+
     // Post-process: normalize phonetic letter patterns → alphanumeric codes
-    let text = normalizeSTTAlphanumeric(rawText);
+    let text = normalizeSTTAlphanumeric(filteredRaw);
 
     // Guard: if context expects a short code but STT returned a suspiciously long digit string,
     // the model likely hallucinated extra digits (e.g. "12345" → "1234567890").

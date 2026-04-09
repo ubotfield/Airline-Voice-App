@@ -1214,6 +1214,44 @@ export class NativeVoiceService {
     if (this.pipelineState === "speaking") return;
 
     // ══════════════════════════════════════════════════════════════
+    // STT HALLUCINATION FILTER — strips phantom annotations that Gemini STT
+    // produces when it picks up residual TTS audio, music, or ambient noise.
+    // Examples: "[Upbeat music]", "[Background noise]", "[ Music ]", "(applause)"
+    // ══════════════════════════════════════════════════════════════
+
+    // Strip bracket-enclosed and paren-enclosed annotations
+    let cleanedText = userText.replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
+    // Also strip common standalone hallucination phrases
+    const hallucinationPhrases = [
+      /^(upbeat|background|ambient)\s*(music|noise|sounds?)\s*$/i,
+      /^music\s*$/i,
+      /^applause\s*$/i,
+      /^silence\s*$/i,
+      /^inaudible\s*$/i,
+      /^thank you\.?\s*$/i,  // common STT hallucination on silence
+      /^thanks\.?\s*$/i,
+      /^you$/i,
+      /^bye\.?\s*$/i,
+    ];
+    if (hallucinationPhrases.some(p => p.test(cleanedText))) {
+      dbg(`⚠️ STT hallucination filter: "${userText}" → discarding (matched hallucination phrase)`);
+      this.pipelineState = "idle";
+      this.scheduleNextChunk();
+      return;
+    }
+    if (cleanedText.length === 0 || cleanedText.length < 2) {
+      dbg(`⚠️ STT hallucination filter: "${userText}" → empty after stripping annotations — discarding`);
+      this.pipelineState = "idle";
+      this.scheduleNextChunk();
+      return;
+    }
+    // If annotations were stripped, use the cleaned text
+    if (cleanedText !== userText.trim()) {
+      dbg(`STT hallucination filter: "${userText}" → cleaned to "${cleanedText}"`);
+      userText = cleanedText;
+    }
+
+    // ══════════════════════════════════════════════════════════════
     // MULTI-LAYER ECHO GUARD — prevents ghost transcriptions from reaching the agent
     // ══════════════════════════════════════════════════════════════
 
