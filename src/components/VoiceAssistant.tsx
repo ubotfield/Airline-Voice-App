@@ -205,6 +205,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const [hasError, setHasError] = useState(false);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [currentUserText, setCurrentUserText] = useState("");
+  const [confirmedTurnIds, setConfirmedTurnIds] = useState<Set<string>>(new Set());
 
   const { addNotification } = useNotifications();
   const hasErrorRef = useRef(false);
@@ -222,9 +223,21 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     if (confirmInFlight.current || !agentRef.current?.isActive || !nativeRef.current) return;
     confirmInFlight.current = true;
     try {
+      // Mark the latest turn as confirmed so buttons hide immediately
+      setTurns(prev => {
+        const lastTurn = prev[prev.length - 1];
+        if (lastTurn) {
+          setConfirmedTurnIds(s => new Set(s).add(lastTurn.id));
+        }
+        return prev;
+      });
+
       nativeRef.current.sttContext = null; // Clear any STT context bias
-      // Inject the text directly into the voice pipeline
-      nativeRef.current.injectText(answer);
+      // Send explicit instruction so agent executes rather than re-confirms
+      const explicitMessage = answer === "Yes"
+        ? "Yes, go ahead and process it now."
+        : "No, I don't want to do that.";
+      nativeRef.current.injectText(explicitMessage);
     } catch (err: any) {
       console.warn("[voice] Confirmation send failed:", err?.message);
     } finally {
@@ -923,8 +936,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {!card.miles.balance || card.miles.balance === "---" ? (
                           <p className="text-sm text-on-primary-container/80 font-medium leading-relaxed">{turn.agentText}</p>
                         ) : null}
-                        {/* Tap-to-confirm buttons — bypass STT for reliable confirmation */}
-                        {card.needsConfirmation && (
+                        {/* Tap-to-confirm buttons — only on latest unconfirmed turn */}
+                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && (
                           <div className="flex gap-3 mt-4 pt-3 border-t border-white/10">
                             <button
                               onClick={() => sendConfirmation("Yes")}
@@ -940,6 +953,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                             >
                               No thanks
                             </button>
+                          </div>
+                        )}
+                        {card.needsConfirmation && confirmedTurnIds.has(turn.id) && (
+                          <div className="mt-4 pt-3 border-t border-white/10">
+                            <p className="text-sm text-white/60 font-medium text-center">Processing…</p>
                           </div>
                         )}
                       </div>
@@ -959,8 +977,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {card.upgrade.cost && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
                         )}
-                        {/* Tap-to-confirm buttons — bypass STT for reliable confirmation */}
-                        {card.needsConfirmation && (
+                        {/* Tap-to-confirm buttons — only on latest unconfirmed turn */}
+                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && (
                           <div className="flex gap-3 mt-4 pt-3 border-t border-outline-variant/20">
                             <button
                               onClick={() => sendConfirmation("Yes")}
@@ -976,6 +994,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                             >
                               No thanks
                             </button>
+                          </div>
+                        )}
+                        {card.needsConfirmation && confirmedTurnIds.has(turn.id) && (
+                          <div className="mt-4 pt-3 border-t border-outline-variant/20">
+                            <p className="text-sm text-on-surface-variant font-medium text-center">Processing…</p>
                           </div>
                         )}
                       </div>

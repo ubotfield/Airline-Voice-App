@@ -151,6 +151,11 @@ export class NativeVoiceService {
   // e.g., "mileage-number", "confirmation-code", "flight-number"
   public sttContext: string | null = null;
 
+  // Consecutive-same-hallucination tracking — if the same phantom text is discarded
+  // 3+ times in a row, pause listening longer to break the ambient-noise loop
+  private lastDiscardedText = "";
+  private consecutiveSameDiscard = 0;
+
   /** Set the last agent response text for echo detection. Called by the UI layer. */
   public setLastAgentResponse(text: string): void {
     this.lastAgentResponse = text;
@@ -1280,8 +1285,22 @@ export class NativeVoiceService {
     ];
     if (hallucinationPhrases.some(p => p.test(cleanedText))) {
       dbg(`⚠️ STT hallucination filter: "${userText}" → discarding (matched hallucination phrase)`);
+      // Track consecutive identical hallucinations — if the same phantom text keeps appearing,
+      // the mic is picking up persistent ambient noise. Pause longer to break the loop.
+      if (cleanedText.toLowerCase() === this.lastDiscardedText.toLowerCase()) {
+        this.consecutiveSameDiscard++;
+      } else {
+        this.lastDiscardedText = cleanedText;
+        this.consecutiveSameDiscard = 1;
+      }
       this.pipelineState = "idle";
-      this.scheduleNextChunk();
+      if (this.consecutiveSameDiscard >= 3) {
+        dbg(`⚠️ Same hallucination "${cleanedText}" discarded ${this.consecutiveSameDiscard}x — pausing 5s to let environment settle`);
+        this.consecutiveSameDiscard = 0;
+        setTimeout(() => this.scheduleNextChunk(), 5000);
+      } else {
+        this.scheduleNextChunk();
+      }
       return;
     }
     if (cleanedText.length === 0 || cleanedText.length < 2) {
@@ -1295,6 +1314,9 @@ export class NativeVoiceService {
       dbg(`STT hallucination filter: "${userText}" → cleaned to "${cleanedText}"`);
       userText = cleanedText;
     }
+    // Real user text passed filters — reset consecutive hallucination tracker
+    this.consecutiveSameDiscard = 0;
+    this.lastDiscardedText = "";
 
     // ══════════════════════════════════════════════════════════════
     // REPEAT-ECHO DETECTION — if STT returns the exact same text 2+ times
