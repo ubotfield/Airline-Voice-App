@@ -183,6 +183,11 @@ export class NativeVoiceService {
   // agent's own response, discard it.
   private lastAgentResponse: string = "";
 
+  // Flag: when true, the next resumeListening() uses a short cooldown (greeting just finished).
+  // After greeting, audio was streamed and drained — minimal residual echo, so 500ms is enough.
+  // This prevents the long adaptive cooldown from clipping the user's first words.
+  private useShortCooldown = false;
+
   // Repeat-echo detection: if STT returns the exact same text multiple times
   // consecutively, it's TTS echo being repeatedly captured — not real speech.
   private lastSttResult: string = "";
@@ -998,17 +1003,27 @@ export class NativeVoiceService {
       const data = await res.json();
       const text = data.text?.trim();
       const sttDebug = data.debug;
+      const wasServerFiltered = sttDebug?.filtered === true;
       const sttInfo = [
         (sttDebug?.elapsed || "?") + "ms",
         "finish=" + (sttDebug?.finishReason || "?"),
         "model=" + (sttDebug?.model || "?"),
         "mime=" + (sttDebug?.mime || "?"),
-      ].join(", ");
+        wasServerFiltered ? "FILTERED" : "",
+      ].filter(Boolean).join(", ");
       dbg("STT response: \"" + (text || "(empty)") + "\" (" + sttInfo + ")");
       if (text && text.length > 0) {
         this.consecutiveEmptySTT = 0; // Reset on successful transcription
         this.callbacks.onStatusChange?.("Processing...");
         await this.routeToAgent(text);
+      } else if (wasServerFiltered) {
+        // Server caught a hallucination (e.g. "change my flight" echo) — wait extra long
+        // before resuming to let ambient noise / speaker residual fully dissipate
+        this.consecutiveEmptySTT++;
+        dbg(`⚠️ STT hallucination filtered by server (raw="${sttDebug?.rawText || "?"}") — pausing 3s (${this.consecutiveEmptySTT} consecutive)`);
+        this.pipelineState = "idle";
+        await new Promise(r => setTimeout(r, 3000));
+        if (this._isConnected && this.shouldRestart) this.scheduleNextChunk();
       } else {
         this.consecutiveEmptySTT++;
         dbg(`⚠️ STT returned empty text (${this.consecutiveEmptySTT} consecutive) — recycling`);
@@ -1109,6 +1124,7 @@ export class NativeVoiceService {
 
     // Resume listening with full retry logic (handles Chrome/PWA recognition restart issues)
     this.shouldRestart = true;
+    this.useShortCooldown = true; // Greeting audio already drained — short cooldown to avoid clipping user's first words
     await this.resumeListening();
   }
 
@@ -1119,6 +1135,7 @@ export class NativeVoiceService {
       this.greetingDone = true;
       this.pipelineState = "idle";
       this.shouldRestart = true;
+      this.useShortCooldown = true;
       await this.resumeListening();
       return;
     }
@@ -1136,6 +1153,7 @@ export class NativeVoiceService {
 
     // Resume listening with full retry logic
     this.shouldRestart = true;
+    this.useShortCooldown = true; // Greeting audio already drained — short cooldown
     await this.resumeListening();
   }
 
@@ -1198,13 +1216,21 @@ export class NativeVoiceService {
     // more residual speaker echo that takes more time to dissipate.
     // Short responses (~1-2 sentences): 1500ms is sufficient.
     // Long responses (5+ sentences, upgrade prompts): need 3000-3500ms.
-    // Estimate: ~150ms per word spoken at normal TTS pace.
-    const lastResponseLength = this.lastAgentResponse?.length || 0;
-    const estimatedWords = lastResponseLength / 5; // ~5 chars per word
-    const estimatedSpeechMs = estimatedWords * 150; // ~150ms per word
-    // Cooldown: base 1500ms, scaled up to 3500ms for long responses
-    const cooldownMs = Math.min(3500, Math.max(1500, 1000 + estimatedSpeechMs * 0.15));
-    dbg(`Post-TTS cooldown: ${Math.round(cooldownMs)}ms (response ~${Math.round(estimatedWords)} words)`);
+    // EXCEPTION: After greeting, streaming already drained all audio, so use 500ms
+    // to avoid clipping the beginning of the user's first utterance.
+    let cooldownMs: number;
+    if (this.useShortCooldown) {
+      cooldownMs = 500; // Greeting or streamed audio — already drained, minimal echo
+      this.useShortCooldown = false;
+      dbg(`Post-TTS cooldown: ${cooldownMs}ms (short — greeting/streamed)`);
+    } else {
+      const lastResponseLength = this.lastAgentResponse?.length || 0;
+      const estimatedWords = lastResponseLength / 5; // ~5 chars per word
+      const estimatedSpeechMs = estimatedWords * 150; // ~150ms per word
+      // Cooldown: base 1500ms, scaled up to 3500ms for long responses
+      cooldownMs = Math.min(3500, Math.max(1500, 1000 + estimatedSpeechMs * 0.15));
+      dbg(`Post-TTS cooldown: ${Math.round(cooldownMs)}ms (response ~${Math.round(estimatedWords)} words)`);
+    }
     await new Promise(r => setTimeout(r, cooldownMs));
     if (!this._isConnected || !this.shouldRestart) return;
 
@@ -1278,10 +1304,16 @@ export class NativeVoiceService {
       /^thanks\.?\s*$/i,
       /^you$/i,
       /^bye\.?\s*$/i,
-      // Persistent Gemini phantom: TTS echo transcribed as flight-change requests
-      /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
-      /^(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
-      /^i\s*want\s*to\s*(change|modify|cancel|rebook)\s*my\s*flight\.?\s*$/i,
+      // Persistent Gemini phantom: TTS echo transcribed as flight-change/upgrade requests
+      /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      /^(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      /^i\s*want\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      /^(can i|could i|i need to)\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      // Short generic hallucinationss from ambient noise
+      /^(hi|hello|hey)\s*(there)?\.?\s*$/i,
+      /^(okay|ok|sure|yes|no|yeah|yep|nope)\.?\s*$/i,
+      /^(certainly|absolutely|of course)\.?\s*$/i,
+      /^(let me|allow me)\s/i,
     ];
     if (hallucinationPhrases.some(p => p.test(cleanedText))) {
       dbg(`⚠️ STT hallucination filter: "${userText}" → discarding (matched hallucination phrase)`);
@@ -1428,6 +1460,7 @@ export class NativeVoiceService {
             // V5 streaming: audio was already played during the callback — just resume listening
             dbg("Audio already played via streaming — skipping playback, resuming listening");
             this.pipelineState = "idle";
+            this.useShortCooldown = true; // Streamed audio already drained — short cooldown
           } else {
             this.callbacks.onStatusChange?.("Speaking...");
             // pauseListening() already called above — no need to call again

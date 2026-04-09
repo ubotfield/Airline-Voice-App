@@ -1119,10 +1119,18 @@ app.post("/api/stt", async (req, res) => {
       /^i'?d?\s*like\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
       /^(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
       /^i\s*want\s*to\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
+      /^(can i|could i|i need to)\s*(change|modify|cancel|rebook|upgrade)\s*my\s*(flight|seat)\.?\s*$/i,
       // FIX 6: Additional echo patterns seen in production logs
       /^(one moment|one moment please)\.?\s*$/i, // Echo of thinking filler
       /^(how can i help|how may i help|how can i assist).*$/i, // Echo of agent greeting
       /^(welcome to|welcome aboard|thank you for calling).*$/i, // Echo of greeting
+      // FIX 7: Short generic phrases that Gemini hallucinates from ambient noise
+      /^(hi|hello|hey)\s*(there)?\.?\s*$/i,
+      /^(good|great)\.?\s*$/i,
+      /^(okay|ok|sure|yes|no|yeah|yep|nope)\.?\s*$/i,
+      // FIX 7: Partial echo of agent response phrases
+      /^(let me|allow me|i can|i'll)\s/i,
+      /^(certainly|absolutely|of course)\.?\s*$/i,
     ];
 
     // Additional patterns: if the raw text had a bracket annotation like [Upbeat music],
