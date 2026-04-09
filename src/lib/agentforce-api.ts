@@ -4,6 +4,7 @@ export class AgentforceSession {
   private sessionId: string | null = null;
   private sequenceId: number = 0;
   private variablesSent: boolean = false;
+  private personaPrefixSent: boolean = false;
   private personaVarsCache: Array<{ name: string; type: string; value: string }> = [];
 
   get isActive(): boolean {
@@ -20,6 +21,7 @@ export class AgentforceSession {
     this.sessionId = data.sessionId;
     this.sequenceId = 0;
     this.variablesSent = false;
+    this.personaPrefixSent = false;
     this.personaVarsCache = [];
 
     // Pre-fetch persona so it's ready for every message
@@ -28,8 +30,9 @@ export class AgentforceSession {
 
   /**
    * Loads persona data once and caches it as structured variables.
-   * Context is passed ONLY via the Agentforce variables array (not prepended to messages)
-   * so the planner can cleanly identify the user's intent.
+   * Context is passed via BOTH the Agentforce variables array AND a natural-language
+   * prefix on the first message — the prefix ensures the planner auto-fills action
+   * parameters (PNR, SkyMiles, etc.) without re-asking the customer.
    */
   private async loadPersona(): Promise<void> {
     try {
@@ -64,14 +67,28 @@ export class AgentforceSession {
     return this.personaVarsCache;
   }
 
+  /**
+   * Returns a natural-language customer context prefix (only on first call).
+   * This is prepended to the first user message so the planner can directly
+   * extract PNR, SkyMiles, etc. from the conversation text — eliminating the
+   * need to ask the user for info that's already known.
+   */
+  private getPersonaPrefix(): string {
+    if (this.personaPrefixSent || this.personaVarsCache.length === 0) return "";
+    this.personaPrefixSent = true;
+    const parts = this.personaVarsCache.map(v => `${v.name}=${v.value}`);
+    return `[Customer context: ${parts.join(", ")}] `;
+  }
+
   async sendMessage(text: string): Promise<string> {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
     const variables = this.getPersonaVariables();
+    const message = this.getPersonaPrefix() + text;
     const res = await fetch(apiUrl("/api/agent/message"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: this.sessionId, message: text, sequenceId: this.sequenceId, variables }),
+      body: JSON.stringify({ sessionId: this.sessionId, message, sequenceId: this.sequenceId, variables }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -89,10 +106,11 @@ export class AgentforceSession {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
     const variables = this.getPersonaVariables();
+    const message = this.getPersonaPrefix() + text;
     const res = await fetch(apiUrl("/api/agent/speak"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: this.sessionId, message: text, sequenceId: this.sequenceId, variables }),
+      body: JSON.stringify({ sessionId: this.sessionId, message, sequenceId: this.sequenceId, variables }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -131,13 +149,14 @@ export class AgentforceSession {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
     const variables = this.getPersonaVariables();
+    const message = this.getPersonaPrefix() + text;
 
     const res = await fetch(apiUrl("/api/agent/speak-stream"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: this.sessionId,
-        message: text,
+        message,
         sequenceId: this.sequenceId,
         variables,
       }),
@@ -212,13 +231,14 @@ export class AgentforceSession {
     if (!this.sessionId) throw new Error("No active session. Call start() first.");
     this.sequenceId++;
     const variables = this.getPersonaVariables();
+    const message = this.getPersonaPrefix() + text;
 
     const res = await fetch(apiUrl("/api/agent/message-stream"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: this.sessionId,
-        message: text,
+        message,
         sequenceId: this.sequenceId,
         variables,
         ...(options?.skipFiller ? { skipFiller: true } : {}),

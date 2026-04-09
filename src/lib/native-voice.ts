@@ -166,6 +166,11 @@ export class NativeVoiceService {
   // agent's own response, discard it.
   private lastAgentResponse: string = "";
 
+  // Repeat-echo detection: if STT returns the exact same text multiple times
+  // consecutively, it's TTS echo being repeatedly captured — not real speech.
+  private lastSttResult: string = "";
+  private sttRepeatCount: number = 0;
+
   get isConnected(): boolean {
     return this._isConnected;
   }
@@ -1157,10 +1162,11 @@ export class NativeVoiceService {
     this.lastRecognitionActivity = Date.now(); // reset watchdog
     this.callbacks.onStatusChange?.("Listening...");
 
-    // POST-TTS SETTLING DELAY: Brief pause for residual speaker vibration to stop.
-    // With mic tracks muted during playback, this only needs to cover the physical
-    // speaker-to-mic acoustic path settling. 150ms is enough.
-    await new Promise(r => setTimeout(r, 150));
+    // POST-TTS SETTLING DELAY: Pause for residual speaker vibration to stop.
+    // With mic tracks muted during playback, this covers the physical
+    // speaker-to-mic acoustic path settling. 500ms prevents Gemini STT from
+    // transcribing residual TTS echo as phantom text (e.g. "[Upbeat music]").
+    await new Promise(r => setTimeout(r, 500));
     if (!this._isConnected || !this.shouldRestart) return;
 
     // CRITICAL: Unmute mic tracks AFTER the settling delay.
@@ -1172,20 +1178,21 @@ export class NativeVoiceService {
       // InvalidStateError or silent hangs when start() is called on an
       // already-active instance (common on mobile Chrome/Safari).
       try { this.recognition?.stop(); } catch { /* ignore */ }
-      // Refresh mic stream before restarting recognition — Chrome/Safari
-      // can lose the mic connection after audio playback, especially in PWA mode
-      try { await this.refreshMicStream(); } catch { /* ignore */ }
+      // Force fresh mic stream after TTS to flush any echo-contaminated buffers
+      try { await this.refreshMicStream(true); } catch { /* ignore */ }
       this.restartRecognition();
     } else {
-      try { await this.refreshMicStream(); } catch { /* ignore */ }
+      // Force fresh mic stream after TTS to flush any echo-contaminated buffers
+      try { await this.refreshMicStream(true); } catch { /* ignore */ }
       this.scheduleNextChunk();
     }
   }
 
-  private async refreshMicStream(): Promise<void> {
-    // #7: Skip getUserMedia if existing track is still live — saves ~50-200ms per turn
+  private async refreshMicStream(forceNew = false): Promise<void> {
+    // #7: Skip getUserMedia if existing track is still live — saves ~50-200ms per turn.
+    // forceNew=true bypasses this optimization (used after TTS to flush echo-contaminated buffers).
     const existingTrack = this.mediaStream?.getAudioTracks()?.[0];
-    if (existingTrack && existingTrack.readyState === "live" && existingTrack.enabled) {
+    if (!forceNew && existingTrack && existingTrack.readyState === "live" && existingTrack.enabled) {
       dbg("refreshMicStream: existing track still live, skipping getUserMedia");
       return;
     }
@@ -1252,6 +1259,27 @@ export class NativeVoiceService {
     }
 
     // ══════════════════════════════════════════════════════════════
+    // REPEAT-ECHO DETECTION — if STT returns the exact same text 2+ times
+    // consecutively, it's TTS echo being repeatedly captured by the mic.
+    // This catches persistent phantom phrases like "I'd like to change my flight"
+    // that Gemini STT hallucinates from residual speaker audio.
+    // ══════════════════════════════════════════════════════════════
+
+    const currentSttNorm = userText.trim().toLowerCase();
+    if (currentSttNorm === this.lastSttResult) {
+      this.sttRepeatCount++;
+      if (this.sttRepeatCount >= 1) {
+        dbg(`⚠️ Repeat-echo filter: "${userText}" repeated ${this.sttRepeatCount + 1}x consecutively — discarding as TTS echo`);
+        this.pipelineState = "idle";
+        this.scheduleNextChunk();
+        return;
+      }
+    } else {
+      this.sttRepeatCount = 0;
+    }
+    this.lastSttResult = currentSttNorm;
+
+    // ══════════════════════════════════════════════════════════════
     // MULTI-LAYER ECHO GUARD — prevents ghost transcriptions from reaching the agent
     // ══════════════════════════════════════════════════════════════
 
@@ -1303,6 +1331,8 @@ export class NativeVoiceService {
 
     this.pipelineState = "speaking";
     this.lastUserMessage = userText; // Track for echo duplicate detection
+    this.sttRepeatCount = 0; // Reset repeat tracker — this was real speech, not echo
+    this.lastSttResult = ""; // Clear so the same text can be spoken intentionally later
     this.callbacks.onStatusChange?.("Processing...");
 
     // CRITICAL: Pause recognition IMMEDIATELY when entering speaking state.
