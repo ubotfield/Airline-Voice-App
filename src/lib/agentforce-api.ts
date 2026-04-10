@@ -1,31 +1,65 @@
 import { apiUrl } from "./api-base";
 
+// A4: Session TTL — Agentforce sessions expire after ~30 minutes of inactivity
+const SESSION_TTL_MS = 25 * 60 * 1000; // 25 min (conservative buffer before 30 min server-side expiry)
+
+// A6: Session start retry config
+const SESSION_START_MAX_RETRIES = 2;
+const SESSION_START_RETRY_DELAY_MS = 1500;
+
 export class AgentforceSession {
   private sessionId: string | null = null;
   private sequenceId: number = 0;
   private variablesSent: boolean = false;
   private personaPrefixSent: boolean = false;
   private personaVarsCache: Array<{ name: string; type: string; value: string }> = [];
+  // A4: Track session creation time and last activity for TTL
+  private createdAt: number = 0;
+  private lastActivityAt: number = 0;
 
   get isActive(): boolean {
-    return this.sessionId !== null;
+    return this.sessionId !== null && !this.isExpired;
+  }
+
+  // A4: Check if session has exceeded TTL
+  private get isExpired(): boolean {
+    if (!this.sessionId) return true;
+    const elapsed = Date.now() - this.lastActivityAt;
+    return elapsed > SESSION_TTL_MS;
   }
 
   async start(): Promise<void> {
-    const res = await fetch(apiUrl("/api/agent/session"), { method: "POST" });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Unknown error" }));
-      throw new Error(err.error || `Failed to start session: ${res.status}`);
-    }
-    const data = await res.json();
-    this.sessionId = data.sessionId;
-    this.sequenceId = 0;
-    this.variablesSent = false;
-    this.personaPrefixSent = false;
-    this.personaVarsCache = [];
+    // A6: Retry logic — session creation can fail transiently
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= SESSION_START_MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch(apiUrl("/api/agent/session"), { method: "POST" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: "Unknown error" }));
+          throw new Error(err.error || `Failed to start session: ${res.status}`);
+        }
+        const data = await res.json();
+        this.sessionId = data.sessionId;
+        this.sequenceId = 0;
+        this.variablesSent = false;
+        this.personaPrefixSent = false;
+        this.personaVarsCache = [];
+        // A4: Record session timestamps
+        this.createdAt = Date.now();
+        this.lastActivityAt = Date.now();
 
-    // Pre-fetch persona so it's ready for every message
-    await this.loadPersona();
+        // Pre-fetch persona so it's ready for every message
+        await this.loadPersona();
+        return; // success
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[agent] Session start attempt ${attempt}/${SESSION_START_MAX_RETRIES} failed: ${err.message}`);
+        if (attempt < SESSION_START_MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, SESSION_START_RETRY_DELAY_MS * attempt));
+        }
+      }
+    }
+    throw lastError || new Error("Failed to start session after retries");
   }
 
   /**
@@ -80,9 +114,22 @@ export class AgentforceSession {
     return `[Customer context: ${parts.join(", ")}] `;
   }
 
+  /**
+   * A4: Ensure session is still valid before sending a message.
+   * If expired, transparently restart the session.
+   */
+  private async ensureSession(): Promise<void> {
+    if (!this.sessionId || this.isExpired) {
+      console.log(`[agent] Session expired or missing — restarting (age=${this.sessionId ? Math.round((Date.now() - this.createdAt) / 1000) + 's' : 'none'})`);
+      await this.end();
+      await this.start();
+    }
+  }
+
   async sendMessage(text: string): Promise<string> {
-    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    await this.ensureSession();
     this.sequenceId++;
+    this.lastActivityAt = Date.now(); // A4: Update activity timestamp
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
     const res = await fetch(apiUrl("/api/agent/message"), {
@@ -103,8 +150,9 @@ export class AgentforceSession {
    * Returns { response, audioData? } where audioData is an ArrayBuffer of WAV.
    */
   async sendMessageWithAudio(text: string): Promise<{ response: string; audioData?: ArrayBuffer }> {
-    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    await this.ensureSession();
     this.sequenceId++;
+    this.lastActivityAt = Date.now(); // A4
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
     const res = await fetch(apiUrl("/api/agent/speak"), {
@@ -146,8 +194,9 @@ export class AgentforceSession {
       onError?: (error: string) => void;
     }
   ): Promise<{ response: string }> {
-    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    await this.ensureSession();
     this.sequenceId++;
+    this.lastActivityAt = Date.now(); // A4
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
 
@@ -228,8 +277,9 @@ export class AgentforceSession {
     },
     options?: { skipFiller?: boolean }
   ): Promise<{ response: string }> {
-    if (!this.sessionId) throw new Error("No active session. Call start() first.");
+    await this.ensureSession();
     this.sequenceId++;
+    this.lastActivityAt = Date.now(); // A4
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
 
@@ -307,5 +357,7 @@ export class AgentforceSession {
     } catch { /* ignore */ }
     this.sessionId = null;
     this.sequenceId = 0;
+    this.createdAt = 0;
+    this.lastActivityAt = 0;
   }
 }

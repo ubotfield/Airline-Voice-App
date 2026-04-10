@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { X, Sparkles, Plane, Star, ArrowUpCircle, Luggage } from "lucide-react";
+import { X, Sparkles, Plane, Star, ArrowUpCircle, Luggage, Send, CheckCircle2 } from "lucide-react";
 import { MicFilled } from "./icons/MicFilled";
 import { NativeVoiceService } from "../lib/native-voice";
 import { AgentforceSession } from "../lib/agentforce-api";
@@ -205,6 +205,10 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const [hasError, setHasError] = useState(false);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [currentUserText, setCurrentUserText] = useState("");
+  // B7: Text input fallback
+  const [textInput, setTextInput] = useState("");
+  // B8: Live captions during streaming
+  const [streamingCaption, setStreamingCaption] = useState("");
   const [confirmedTurnIds, setConfirmedTurnIds] = useState<Set<string>>(new Set());
   // Track whether a confirmation flow is active — prevents duplicate cards
   // Once user taps Yes/No, this stays true until the agent finishes the action
@@ -537,12 +541,15 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
                 const { response } = await Promise.race([
                   agentRef.current!.sendMessageFullStreaming(userText, {
-                    onTextChunk: (chunk, _fullText) => {
-                      console.log("[voice] Msg text chunk: " + chunk.substring(0, 40));
+                    onTextChunk: (_chunk, fullText) => {
+                      console.log("[voice] Msg text chunk: " + _chunk.substring(0, 40));
                       setStatus("Speaking...");
+                      // B8: Live caption — show agent text as it streams
+                      setStreamingCaption(fullText || "");
                     },
                     onTextComplete: (fullText) => {
                       streamResponse = fullText;
+                      setStreamingCaption(""); // Clear live caption when complete
                       console.log("[voice] Msg text complete: " + fullText.substring(0, 60));
                     },
                     onAudioChunk: (pcmBase64, _index, sentenceIndex) => {
@@ -666,18 +673,16 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
               if (confirmationActiveRef.current && isReconfirmation && autoReconfirmCount.current < MAX_AUTO_RECONFIRMS) {
                 autoReconfirmCount.current++;
-                console.log(`[voice] ⚡ Auto-reconfirm #${autoReconfirmCount.current}: agent re-asked "${response.substring(0, 60)}..." — scheduling auto-Yes`);
-                // Don't add this as a visible turn — schedule a delayed re-confirm
-                // IMPORTANT: Use setTimeout instead of injectText to avoid reentrancy.
-                // injectText would call routeToAgent which conflicts with the current
-                // pipeline flow (resumeListening runs right after this return).
-                // The timeout fires after the current flow completes and listening resumes.
-                setTimeout(() => {
+                console.log(`[voice] ⚡ Auto-reconfirm #${autoReconfirmCount.current}: agent re-asked "${response.substring(0, 60)}..." — silently confirming`);
+                // A9: Use serialization queue via injectText instead of fragile setTimeout.
+                // injectText now uses an async queue (A9b) so it won't cause reentrancy.
+                // Use queueMicrotask to let the current pipeline return cleanly first.
+                queueMicrotask(() => {
                   if (nativeRef.current && agentRef.current?.isActive) {
-                    console.log("[voice] ⚡ Executing delayed auto-reconfirm");
+                    console.log("[voice] ⚡ Executing queued auto-reconfirm via injectText");
                     nativeRef.current.injectText("Yes, confirmed. Execute now.");
                   }
-                }, 800); // Wait for current pipeline to fully settle
+                });
                 // Return the streaming result as-is (audio already played)
                 if (streamingWorked) {
                   return { text: response, audioPlayed: true } as any;
@@ -697,6 +702,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               const turnId = `turn-${++turnCounter.current}`;
               setTurns(prev => [...prev, { id: turnId, userText, agentText: response }]);
               setCurrentUserText("");
+              setStreamingCaption(""); // B8: Clear live caption
 
               // Emit voice result for home screen animation
               onVoiceResult?.({ userText, agentText: response });
@@ -916,10 +922,33 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               )}
 
               {/* ── Conversation History with Structured Cards ── */}
-              {turns.map((turn) => {
+              {turns.map((turn, turnIndex) => {
                 const card = parseResponseToCard(turn.agentText);
                 return (
-                  <div key={turn.id} className="mb-6">
+                  <motion.div
+                    key={turn.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0, x: 0 }}
+                    exit={{ opacity: 0, x: -200 }}
+                    transition={{ duration: 0.35, delay: turnIndex * 0.08, ease: "easeOut" }}
+                    // B6: Drag-to-dismiss
+                    drag="x"
+                    dragConstraints={{ left: 0, right: 0 }}
+                    dragElastic={0.4}
+                    onDragEnd={(_e, info) => {
+                      if (Math.abs(info.offset.x) > 120) {
+                        setTurns(prev => prev.filter(t => t.id !== turn.id));
+                      }
+                    }}
+                    whileDrag={{ opacity: 0.7, scale: 0.97 }}
+                    className={cn(
+                      "mb-6 cursor-grab active:cursor-grabbing",
+                      card.type === "flight" && "border-l-2 border-secondary/30 pl-3",
+                      card.type === "miles" && "border-l-2 border-[#d4af37]/30 pl-3",
+                      card.type === "upgrade" && "border-l-2 border-[#7c3aed]/30 pl-3",
+                      card.type === "baggage" && "border-l-2 border-primary/20 pl-3",
+                    )}
+                  >
                     {/* User said */}
                     <div className="mb-2">
                       <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
@@ -1016,9 +1045,21 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           </div>
                         )}
                         {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActive) && (
-                          <div className="mt-4 pt-3 border-t border-white/10">
-                            <p className="text-sm text-white/60 font-medium text-center">Processing…</p>
-                          </div>
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                            className="mt-4 pt-3 border-t border-white/10 flex items-center justify-center gap-2"
+                          >
+                            <motion.div
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              transition={{ delay: 0.15, type: "spring", stiffness: 500 }}
+                            >
+                              <CheckCircle2 size={16} className="text-green-400" />
+                            </motion.div>
+                            <p className="text-sm text-white/60 font-medium">Confirmed — processing</p>
+                          </motion.div>
                         )}
                       </div>
                     )}
@@ -1057,9 +1098,21 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           </div>
                         )}
                         {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActive) && (
-                          <div className="mt-4 pt-3 border-t border-outline-variant/20">
-                            <p className="text-sm text-on-surface-variant font-medium text-center">Processing…</p>
-                          </div>
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                            className="mt-4 pt-3 border-t border-outline-variant/20 flex items-center justify-center gap-2"
+                          >
+                            <motion.div
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              transition={{ delay: 0.15, type: "spring", stiffness: 500 }}
+                            >
+                              <CheckCircle2 size={16} className="text-green-500" />
+                            </motion.div>
+                            <p className="text-sm text-on-surface-variant font-medium">Confirmed — processing</p>
+                          </motion.div>
                         )}
                       </div>
                     )}
@@ -1082,28 +1135,72 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       </div>
                     )}
 
-                    {/* Quick-action chips */}
+                    {/* Quick-action chips — B1: tap sends chip text to agent */}
                     {card.chips.length > 0 && (
                       <div className="flex gap-2 overflow-x-auto pb-1 mt-3 scrollbar-hide">
                         {card.chips.map((chip) => (
                           <button
                             key={chip}
-                            className="whitespace-nowrap px-4 py-2 rounded-full border border-primary/20 text-primary text-xs font-bold hover:bg-primary/5 transition-colors flex-shrink-0"
+                            onClick={() => {
+                              if (nativeRef.current && agentRef.current?.isActive) {
+                                nativeRef.current.injectText(chip);
+                              }
+                            }}
+                            className="whitespace-nowrap px-4 py-2 rounded-full border border-primary/20 text-primary text-xs font-bold hover:bg-primary/5 active:bg-primary/10 active:scale-95 transition-all flex-shrink-0"
                           >
                             {chip}
                           </button>
                         ))}
                       </div>
                     )}
-                  </div>
+                  </motion.div>
                 );
               })}
 
-              {/* ── Current user text (while processing) ── */}
+              {/* ── Current user text + B3 skeleton card (while processing) ── */}
               {currentUserText && (
-                <div className="mb-4">
+                <motion.div
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.25 }}
+                  className="mb-4"
+                >
                   <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
                   <p className="text-primary font-medium text-lg italic">"{currentUserText}"</p>
+
+                  {/* B8: Live caption OR B3: Skeleton shimmer */}
+                  {streamingCaption ? (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="mt-4 bg-surface-container rounded-2xl p-5"
+                    >
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
+                          <Sparkles size={14} className="text-white" />
+                        </div>
+                        <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">Agent responding</span>
+                      </div>
+                      <p className="text-primary font-medium text-sm leading-relaxed">{streamingCaption}<motion.span animate={{ opacity: [1, 0] }} transition={{ repeat: Infinity, duration: 0.8 }} className="inline-block ml-0.5 w-1 h-4 bg-secondary/60 align-text-bottom" /></p>
+                    </motion.div>
+                  ) : (
+                    <div className="mt-4 bg-surface-container rounded-2xl p-5 animate-pulse">
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="w-8 h-8 rounded-full bg-outline-variant/20" />
+                        <div className="h-5 bg-outline-variant/20 rounded-lg w-2/3" />
+                      </div>
+                      <div className="space-y-2.5">
+                        <div className="h-3 bg-outline-variant/15 rounded w-full" />
+                        <div className="h-3 bg-outline-variant/15 rounded w-5/6" />
+                        <div className="h-3 bg-outline-variant/15 rounded w-3/4" />
+                      </div>
+                      <div className="flex gap-2 mt-4">
+                        <div className="h-8 bg-outline-variant/10 rounded-full w-24" />
+                        <div className="h-8 bg-outline-variant/10 rounded-full w-20" />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex items-center gap-2 mt-3">
                     <div className="flex gap-1">
                       {[0, 1, 2].map(i => (
@@ -1117,7 +1214,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     </div>
                     <p className="text-on-surface-variant text-xs font-medium">{status}</p>
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* ── Compact listening indicator inside bottom sheet (when results exist) ── */}
@@ -1150,6 +1247,35 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* B7: Text input fallback — type instead of speaking */}
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={textInput}
+                  onChange={(e) => setTextInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && textInput.trim() && nativeRef.current && agentRef.current?.isActive) {
+                      nativeRef.current.injectText(textInput.trim());
+                      setTextInput("");
+                    }
+                  }}
+                  placeholder="Type a message..."
+                  className="flex-1 bg-surface-container rounded-xl px-4 py-2.5 text-sm text-on-surface placeholder:text-on-surface-variant/50 outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+                />
+                <button
+                  onClick={() => {
+                    if (textInput.trim() && nativeRef.current && agentRef.current?.isActive) {
+                      nativeRef.current.injectText(textInput.trim());
+                      setTextInput("");
+                    }
+                  }}
+                  disabled={!textInput.trim()}
+                  className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center disabled:opacity-30 hover:bg-primary-dim active:scale-95 transition-all flex-shrink-0"
+                >
+                  <Send size={16} className="text-white" />
+                </button>
+              </div>
 
               {/* Close Button — always visible */}
               <div className="absolute top-6 right-6">

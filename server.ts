@@ -47,6 +47,8 @@ let cachedToken: string | null = null;
 let cachedInstanceUrl: string | null = null;
 let cachedApiInstanceUrl: string | null = null;
 let tokenExpiry = 0;
+// A1: Dedup lock — prevents concurrent callers from firing parallel OAuth requests
+let tokenInflight: Promise<{ accessToken: string; instanceUrl: string; apiInstanceUrl: string }> | null = null;
 
 async function getAccessToken(): Promise<{
   accessToken: string;
@@ -57,34 +59,48 @@ async function getAccessToken(): Promise<{
     return { accessToken: cachedToken, instanceUrl: cachedInstanceUrl, apiInstanceUrl: cachedApiInstanceUrl };
   }
 
-  console.log("[auth] Fetching new access token via Client Credentials...");
-
-  const params = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: SF_CLIENT_ID,
-    client_secret: SF_CLIENT_SECRET,
-  });
-
-  const res = await fetch(`${SF_LOGIN_URL}/services/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("[auth] Token request failed:", res.status, err);
-    throw new Error(`OAuth token request failed: ${res.status} — ${err}`);
+  // A1: If another caller is already fetching a token, wait for that result
+  if (tokenInflight) {
+    console.log("[auth] Waiting for in-flight token request...");
+    return tokenInflight;
   }
 
-  const data = await res.json();
-  cachedToken = data.access_token;
-  cachedInstanceUrl = data.instance_url;
-  cachedApiInstanceUrl = data.api_instance_url || "https://api.salesforce.com";
-  tokenExpiry = Date.now() + (data.expires_in || 7200) * 1000;
+  tokenInflight = (async () => {
+    try {
+      console.log("[auth] Fetching new access token via Client Credentials...");
 
-  console.log("[auth] Token acquired. Instance URL:", cachedInstanceUrl);
-  return { accessToken: cachedToken!, instanceUrl: cachedInstanceUrl!, apiInstanceUrl: cachedApiInstanceUrl! };
+      const params = new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: SF_CLIENT_ID,
+        client_secret: SF_CLIENT_SECRET,
+      });
+
+      const res = await fetch(`${SF_LOGIN_URL}/services/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        console.error("[auth] Token request failed:", res.status, err);
+        throw new Error(`OAuth token request failed: ${res.status} — ${err}`);
+      }
+
+      const data = await res.json();
+      cachedToken = data.access_token;
+      cachedInstanceUrl = data.instance_url;
+      cachedApiInstanceUrl = data.api_instance_url || "https://api.salesforce.com";
+      tokenExpiry = Date.now() + (data.expires_in || 7200) * 1000;
+
+      console.log("[auth] Token acquired. Instance URL:", cachedInstanceUrl);
+      return { accessToken: cachedToken!, instanceUrl: cachedInstanceUrl!, apiInstanceUrl: cachedApiInstanceUrl! };
+    } finally {
+      tokenInflight = null;
+    }
+  })();
+
+  return tokenInflight;
 }
 
 function invalidateToken() {
@@ -94,31 +110,56 @@ function invalidateToken() {
   tokenExpiry = 0;
 }
 
+// A3: Default timeout for Salesforce API calls (30s — well within Heroku's 30s H12 limit)
+const SF_FETCH_TIMEOUT_MS = 30_000;
+
 async function sfFetch(
   path: string,
-  options: RequestInit & { instanceUrl?: string; useApiUrl?: boolean } = {},
+  options: RequestInit & { instanceUrl?: string; useApiUrl?: boolean; timeoutMs?: number } = {},
   retry = true
 ): Promise<Response> {
   const { accessToken, instanceUrl } = await getAccessToken();
   const baseUrl = options.useApiUrl ? AGENT_API_BASE : (options.instanceUrl || instanceUrl);
   const url = `${baseUrl}${path}`;
 
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      ...(options.headers as Record<string, string>),
-    },
-  });
+  // A3: Timeout guard — abort if Salesforce doesn't respond in time
+  const controller = new AbortController();
+  const timeout = options.timeoutMs || SF_FETCH_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-  if (res.status === 401 && retry) {
-    console.log("[auth] 401 received — refreshing token and retrying...");
-    invalidateToken();
-    return sfFetch(path, options, false);
+  // Compose signals: if caller passed a signal, abort on either
+  const callerSignal = options.signal;
+  if (callerSignal) {
+    callerSignal.addEventListener("abort", () => controller.abort(), { once: true });
   }
 
-  return res;
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        ...(options.headers as Record<string, string>),
+      },
+    });
+
+    clearTimeout(timeoutId);
+
+    if (res.status === 401 && retry) {
+      console.log("[auth] 401 received — refreshing token and retrying...");
+      invalidateToken();
+      return sfFetch(path, options, false);
+    }
+
+    return res;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error(`Salesforce API timeout after ${timeout}ms: ${path}`);
+    }
+    throw err;
+  }
 }
 
 // ─── Agent Session Routes ────────────────────────────────────────
@@ -452,6 +493,15 @@ app.post("/api/agent/message-stream", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
+  // A2: AbortController for upstream Agentforce SSE — abort if client disconnects
+  const upstreamController = new AbortController();
+  let clientDisconnected = false;
+  res.on("close", () => {
+    clientDisconnected = true;
+    upstreamController.abort();
+    console.log("[msg-stream] Client disconnected — upstream aborted");
+  });
+
   try {
     const totalStart = Date.now();
     let firstTextChunkTime = 0;
@@ -471,11 +521,13 @@ app.post("/api/agent/message-stream", async (req, res) => {
     }
 
     // POST to /messages/stream — the real Agentforce SSE endpoint
+    // A2: Use AbortController so upstream SSE is cleaned up if client disconnects
     const { accessToken } = await getAccessToken();
     const sfRes = await fetch(
       `${AGENT_API_BASE}/einstein/ai-agent/v1/sessions/${sessionId}/messages/stream`,
       {
         method: "POST",
+        signal: upstreamController.signal,
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
@@ -514,6 +566,8 @@ app.post("/api/agent/message-stream", async (req, res) => {
 
     // #1: Fire TTS in parallel (no sequential chain). Client buffers by sentenceIndex.
     const fireTtsForSentence = (sentence: string, sIdx: number) => {
+      // A2: Skip if client already disconnected
+      if (clientDisconnected) return;
       if (!sentence.trim() || !process.env.GEMINI_API_KEY) {
         console.log(`[msg-stream] fireTtsForSentence: SKIPPED (empty=${!sentence.trim()}, noKey=${!process.env.GEMINI_API_KEY})`);
         return;
@@ -564,7 +618,10 @@ app.post("/api/agent/message-stream", async (req, res) => {
                     if (audioB64) {
                       chunkIdx++;
                       if (!firstAudioSentTime) firstAudioSentTime = Date.now() - totalStart;
-                      res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: sIdx })}\n\n`);
+                      // A2: Don't write to disconnected client
+                      if (!clientDisconnected) {
+                        res.write(`data: ${JSON.stringify({ type: "audio", chunk: audioB64, index: chunkIdx, sentenceIndex: sIdx })}\n\n`);
+                      }
                     }
                   } catch { /* skip */ }
                 }
@@ -678,7 +735,15 @@ app.post("/api/agent/message-stream", async (req, res) => {
     }
 
     // #1: Wait for ALL parallel TTS calls to complete
-    await Promise.all(ttsPromises);
+    // A7: Batch timeout — don't let TTS stall the response beyond Heroku's 30s limit
+    const TTS_BATCH_TIMEOUT_MS = 20_000; // 20s — leaves headroom within Heroku's 30s H12
+    await Promise.race([
+      Promise.all(ttsPromises),
+      new Promise<void>(resolve => setTimeout(() => {
+        if (ttsPromises.length > 0) console.warn(`[msg-stream] ⚠️ TTS batch timeout (${TTS_BATCH_TIMEOUT_MS}ms) — some sentences may be missing audio`);
+        resolve();
+      }, TTS_BATCH_TIMEOUT_MS)),
+    ]);
 
     const totalMs = Date.now() - totalStart;
     // #9: Timing instrumentation
@@ -686,11 +751,18 @@ app.post("/api/agent/message-stream", async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: "done", fullText, totalMs, sentences: sentenceIndex, timing: { firstTextChunkTime, firstAudioSentTime } })}\n\n`);
     return res.end();
   } catch (err: any) {
-    console.error("[msg-stream] Error:", err.message);
+    // A2: Don't log client-disconnect aborts as errors
+    if (clientDisconnected || err.name === "AbortError") {
+      console.log("[msg-stream] Aborted (client disconnect or upstream abort)");
+    } else {
+      console.error("[msg-stream] Error:", err.message);
+    }
     try {
-      res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+      if (!clientDisconnected) {
+        res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+      }
     } catch { /* ignore */ }
-    return res.end();
+    if (!clientDisconnected) return res.end();
   }
 });
 

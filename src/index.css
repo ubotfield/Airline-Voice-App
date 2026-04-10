@@ -69,3 +69,12 @@
   opacity: 0.3;
   animation: pulse-ring 2s infinite;
 }
+
+/* B1: Hide scrollbar on horizontal chip scrollers */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

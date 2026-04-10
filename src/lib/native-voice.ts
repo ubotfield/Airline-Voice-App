@@ -60,7 +60,7 @@ export interface NativeVoiceCallbacks {
   onOpen?: () => void;
   onClose?: () => void;
   onError?: (error: string) => void;
-  onVolumeChange?: (volume: number) => void;
+  onVolumeChange?: (volume: number, frequencyBands?: number[]) => void;
   onStatusChange?: (status: string) => void;
   onUserTranscription?: (text: string) => Promise<string | any>;
 }
@@ -81,6 +81,10 @@ export class NativeVoiceService {
   private shouldRestart = false;
   private greetingDone = false;
   private pipelineState: PipelineState = "idle";
+
+  // A9b: Serialization queue — prevents concurrent injectText calls from freezing the pipeline
+  private agentCallQueue: Array<() => Promise<void>> = [];
+  private agentCallActive = false;
 
   // Audio resources
   private mediaStream: MediaStream | null = null;
@@ -161,16 +165,47 @@ export class NativeVoiceService {
     this.lastAgentResponse = text;
   }
 
+  // A5: Guarded state transition with logging for key transitions
+  private transitionState(from: PipelineState | PipelineState[], to: PipelineState, label?: string): boolean {
+    const allowed = Array.isArray(from) ? from : [from];
+    if (!allowed.includes(this.pipelineState)) {
+      dbg(`⚠️ State transition BLOCKED: ${this.pipelineState} → ${to} (expected ${allowed.join("|")})${label ? ` [${label}]` : ""}`);
+      return false;
+    }
+    dbg(`State: ${this.pipelineState} → ${to}${label ? ` [${label}]` : ""}`);
+    this.pipelineState = to;
+    return true;
+  }
+
   /**
    * Inject text directly into the voice pipeline as if the user spoke it.
    * Used by tap-to-confirm buttons to bypass STT entirely.
-   * The text goes through routeToAgent which handles agent call, TTS, resume listening.
+   * A9b: Queued — prevents concurrent calls from freezing the pipeline.
    */
   public injectText(text: string): void {
     if (!this._isConnected) return;
-    dbg(`injectText: "${text}" — bypassing STT`);
+    dbg(`injectText: "${text}" — bypassing STT (queue depth: ${this.agentCallQueue.length})`);
     this.consecutiveEmptySTT = 0; // Reset empty counter
-    this.routeToAgent(text);
+
+    // A9b: Queue the call — only one agent call at a time
+    this.agentCallQueue.push(async () => {
+      await this.routeToAgent(text);
+    });
+    this.drainAgentQueue();
+  }
+
+  // A9b: Process agent calls one at a time
+  private async drainAgentQueue(): Promise<void> {
+    if (this.agentCallActive) return;
+    this.agentCallActive = true;
+    try {
+      while (this.agentCallQueue.length > 0) {
+        const next = this.agentCallQueue.shift()!;
+        await next();
+      }
+    } finally {
+      this.agentCallActive = false;
+    }
   }
 
   // Track the last user message text to detect echo-induced duplicates.
@@ -1938,6 +1973,9 @@ export class NativeVoiceService {
   // Volume monitoring (cosmetic only)
   // ===================================================================
 
+  // B9: Number of frequency bands exposed for waveform visualization
+  private static readonly FREQ_BAND_COUNT = 8;
+
   private setupVolumeMonitor(stream: MediaStream): void {
     this.stopVolumeMonitor();
     try {
@@ -1952,13 +1990,30 @@ export class NativeVoiceService {
       source.connect(this.volumeAnalyser);
 
       const dataArray = new Uint8Array(this.volumeAnalyser.frequencyBinCount);
+      const bandCount = NativeVoiceService.FREQ_BAND_COUNT;
+
       this.volumeInterval = window.setInterval(() => {
         if (!this.volumeAnalyser) { this.stopVolumeMonitor(); return; }
         this.volumeAnalyser.getByteFrequencyData(dataArray);
+
+        // Overall average volume (0-1)
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const average = sum / dataArray.length / 255;
-        this.callbacks.onVolumeChange?.(average);
+
+        // B9: Compute frequency bands for waveform visualization
+        // Divide frequency bins into bands, average each band
+        const binsPerBand = Math.floor(dataArray.length / bandCount);
+        const bands: number[] = [];
+        for (let b = 0; b < bandCount; b++) {
+          let bandSum = 0;
+          const start = b * binsPerBand;
+          const end = Math.min(start + binsPerBand, dataArray.length);
+          for (let i = start; i < end; i++) bandSum += dataArray[i];
+          bands.push(bandSum / (end - start) / 255);
+        }
+
+        this.callbacks.onVolumeChange?.(average, bands);
         if (this.pipelineState === "recording" && average > this.peakVolumeDuringChunk) {
           this.peakVolumeDuringChunk = average;
         }

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GenAiPlanner xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Delta Agentforce Service Agent assists travelers with flight information, SkyMiles loyalty operations, seat upgrades, and common travel inquiries. CRITICAL ROUTING RULE: On EVERY new user message, re-evaluate which topic best matches the users CURRENT intent. Do NOT assume the user is continuing the previous topic. If the user previously asked about missing miles but now asks about upgrading their seat, switch to the Seat and Upgrade topic immediately. Always classify based on the latest message, not conversation history. Escalates complex issues to human agents.</description>
+    <masterLabel>SDO Service Agentforce Service Agent</masterLabel>
+    <plannerType>AiCopilot__ReAct</plannerType>
+</GenAiPlanner>
