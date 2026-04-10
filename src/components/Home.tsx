@@ -7,6 +7,7 @@ interface HomeProps {
   onNavigate: (tab: string) => void;
   voiceResult?: { userText: string; agentText: string } | null;
   onDismissVoiceResult?: () => void;
+  demoState?: { seat: string; cabin: string; miles: number; milesJustCredited: number; upgradeConfirmed: boolean; milesCredited: boolean };
 }
 
 function getGreeting(): string {
@@ -63,7 +64,7 @@ function extractVoiceResults(agentText: string): Array<{ icon: 'check' | 'seat' 
   return results.slice(0, 2); // Max 2 items for the card
 }
 
-export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVoiceResult }) => {
+export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVoiceResult, demoState }) => {
   return (
     <div className="space-y-8">
       {/* Hero: Upcoming Flight Card */}
@@ -98,8 +99,21 @@ export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVo
               </div>
               <div>
                 <p className="text-[10px] text-on-surface-variant font-medium uppercase tracking-wider">Seat</p>
-                <p className="text-xl font-bold text-primary">24B</p>
+                <p className="text-xl font-bold text-primary">{demoState?.seat || "24B"}</p>
               </div>
+              {demoState?.cabin && demoState.cabin !== "Main Cabin" && (
+                <div>
+                  <p className="text-[10px] text-on-surface-variant font-medium uppercase tracking-wider">Cabin</p>
+                  <motion.p
+                    key={demoState.cabin}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="text-xl font-bold text-secondary"
+                  >
+                    {demoState.cabin}
+                  </motion.p>
+                </div>
+              )}
               <div>
                 <p className="text-[10px] text-on-surface-variant font-medium uppercase tracking-wider">Flight</p>
                 <p className="text-xl font-bold text-primary">DL 204</p>
@@ -128,7 +142,19 @@ export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVo
               <Star size={18} fill="currentColor" />
               <p className="font-bold tracking-tight uppercase text-xs">SkyMiles Medallion</p>
             </div>
-            <p className="text-4xl font-extrabold mb-1">42,850</p>
+            <p className="text-4xl font-extrabold mb-1">
+              {(demoState?.miles || 42850).toLocaleString()}
+              {demoState?.milesJustCredited ? (
+                <motion.span
+                  key={demoState.milesJustCredited}
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-sm font-bold text-green-400 ml-2"
+                >
+                  +{demoState.milesJustCredited.toLocaleString()}
+                </motion.span>
+              ) : null}
+            </p>
             <p className="text-on-primary-container text-sm font-medium">Miles Available</p>
           </div>
           <div className="mt-6">

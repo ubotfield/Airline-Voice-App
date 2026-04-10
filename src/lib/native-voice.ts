@@ -961,6 +961,11 @@ export class NativeVoiceService {
     this.bargeInSpeechStart = null;
   }
 
+  /** Stop all in-progress audio (TTS, streaming, Audio elements) — public wrapper for cancelAllPlayback */
+  public stopPlayback(): void {
+    this.cancelAllPlayback();
+  }
+
   private cancelAllPlayback(): void {
     // Stop Audio element playback
     if (this.currentAudioElement) {

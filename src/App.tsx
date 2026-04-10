@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Home as HomeIcon, Plane, Star, MoreHorizontal } from 'lucide-react';
 import { MicFilled } from './components/icons/MicFilled';
@@ -12,18 +12,46 @@ import { VoiceAssistant } from './components/VoiceAssistant';
 import { NotificationStack } from './components/NotificationStack';
 import { NotificationProvider } from './lib/notifications';
 import { DebugConsole } from './components/DebugConsole';
+import { apiUrl } from './lib/api-base';
 
 type Tab = 'home' | 'trips' | 'boardingpass' | 'checkin' | 'skymiles' | 'profile';
+
+export interface DemoState {
+  seat: string;
+  cabin: string;
+  miles: number;
+  milesJustCredited: number;
+  upgradeConfirmed: boolean;
+  milesCredited: boolean;
+}
+
+const DEMO_STATE_DEFAULTS: DemoState = {
+  seat: "24B", cabin: "Main Cabin", miles: 42850,
+  milesJustCredited: 0, upgradeConfirmed: false, milesCredited: false,
+};
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceResult, setVoiceResult] = useState<{ userText: string; agentText: string } | null>(null);
 
+  // ─── Live demo state: updated when agent confirms actions ───
+  const [demoState, setDemoState] = useState<DemoState>({ ...DEMO_STATE_DEFAULTS });
+  const [resetToast, setResetToast] = useState(false);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const doReset = () => {
+    setDemoState({ ...DEMO_STATE_DEFAULTS });
+    setVoiceResult(null);
+    fetch(apiUrl("/api/demo-reset"), { method: "POST" }).catch(() => {});
+    setResetToast(true);
+    setTimeout(() => setResetToast(false), 1500);
+  };
+
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
-        return <Home onNavigate={(tab: string) => setActiveTab(tab as Tab)} voiceResult={voiceResult} onDismissVoiceResult={() => setVoiceResult(null)} />;
+        return <Home onNavigate={(tab: string) => setActiveTab(tab as Tab)} voiceResult={voiceResult} onDismissVoiceResult={() => setVoiceResult(null)} demoState={demoState} />;
       case 'trips':
         return (
           <Trips
@@ -53,7 +81,13 @@ function AppContent() {
       {/* Top App Bar */}
       <header className="bg-surface/90 backdrop-blur-md flex justify-between items-center w-full px-6 py-4 fixed top-0 z-50 border-b border-outline-variant/20" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-3">
-          <div className="text-secondary">
+          <div
+            className="text-secondary select-none cursor-pointer"
+            onMouseDown={() => { resetTimerRef.current = setTimeout(doReset, 3000); }}
+            onMouseUp={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
+            onTouchStart={() => { resetTimerRef.current = setTimeout(doReset, 3000); }}
+            onTouchEnd={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
+          >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2L2 22h20L12 2z" />
             </svg>
@@ -73,6 +107,20 @@ function AppContent() {
           </div>
         </div>
       </header>
+
+      {/* Demo Reset Toast */}
+      <AnimatePresence>
+        {resetToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-[200] bg-primary text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg"
+          >
+            Demo Reset ✓
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main Content */}
       <main className="flex-grow pt-24 pb-32 px-6 max-w-5xl mx-auto w-full">
@@ -96,7 +144,34 @@ function AppContent() {
       <VoiceAssistant
         isOpen={voiceOpen}
         onToggle={() => setVoiceOpen(false)}
-        onVoiceResult={(result) => setVoiceResult(result)}
+        onVoiceResult={(result) => {
+          setVoiceResult(result);
+          const lower = result.agentText.toLowerCase();
+
+          // Upgrade confirmed → update seat + cabin on home screen
+          if ((lower.includes("upgrade") && (lower.includes("confirmed") || lower.includes("complete"))) ||
+              lower.includes("upgraded to first class") || lower.includes("upgrade has been")) {
+            const seatMatch = result.agentText.match(/seat\s*(\w{2,4})/i);
+            setDemoState(prev => ({
+              ...prev,
+              cabin: "First Class",
+              seat: seatMatch?.[1] || "2A",
+              upgradeConfirmed: true,
+            }));
+          }
+
+          // Miles credited → update miles balance on home screen
+          if (lower.includes("credited") && lower.includes("miles")) {
+            const milesMatch = result.agentText.match(/([\d,]+)\s*miles/i);
+            const credited = milesMatch ? parseInt(milesMatch[1].replace(/,/g, ""), 10) : 2847;
+            setDemoState(prev => ({
+              ...prev,
+              miles: prev.miles + credited,
+              milesJustCredited: credited,
+              milesCredited: true,
+            }));
+          }
+        }}
       />
 
       {/* In-App Debug Console */}

@@ -704,6 +704,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 queueMicrotask(() => {
                   if (nativeRef.current && agentRef.current?.isActive) {
                     console.log("[voice] ⚡ Executing queued auto-reconfirm via injectText");
+                    nativeRef.current.stopPlayback(); // Bug 3: Stop any in-progress audio before re-confirming
                     nativeRef.current.injectText("Yes, confirmed. Execute now.");
                   }
                 });

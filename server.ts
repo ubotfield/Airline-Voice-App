@@ -914,19 +914,20 @@ async function resetDemoBooking(): Promise<void> {
     // Step 3: Try to reset seat map entries (best effort)
     try {
       const seatQuery = encodeURIComponent(
-        `SELECT Id, Seat_Number__c, Status__c, Cabin__c FROM Seat_Map__c WHERE Flight__c IN (SELECT Flight__c FROM Booking__c WHERE Id = '${DEMO_BOOKING_UPGRADE_ID}') AND (Seat_Number__c = '${DEMO_SEAT_DEFAULT}' OR Seat_Number__c = '2A') LIMIT 10`
+        `SELECT Id, Seat_Number__c, Status__c, Cabin__c FROM Seat_Map__c WHERE Flight__c IN (SELECT Flight__c FROM Booking__c WHERE Id = '${DEMO_BOOKING_UPGRADE_ID}') AND (Cabin__c = 'First Class' OR Seat_Number__c = '${DEMO_SEAT_DEFAULT}') LIMIT 20`
       );
       const seatRes = await sfFetch(`/services/data/v62.0/query/?q=${seatQuery}`);
       if (seatRes.ok) {
         const seatData = await seatRes.json();
         for (const seat of (seatData.records || [])) {
+          // First Class seats → Available, demo default seat (28C) → Occupied
           const newStatus = seat.Seat_Number__c === DEMO_SEAT_DEFAULT ? "Occupied" : "Available";
           if (seat.Status__c !== newStatus) {
             await sfFetch(`/services/data/v62.0/sobjects/Seat_Map__c/${seat.Id}`, {
               method: "PATCH",
               body: JSON.stringify({ Status__c: newStatus }),
             });
-            console.log(`[demo-reset] Seat ${seat.Seat_Number__c}: ${seat.Status__c} → ${newStatus}`);
+            console.log(`[demo-reset] Seat ${seat.Seat_Number__c} (${seat.Cabin__c}): ${seat.Status__c} → ${newStatus}`);
           }
         }
       }
