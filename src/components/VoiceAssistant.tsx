@@ -231,6 +231,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   // This injects the answer into NativeVoiceService's routeToAgent,
   // which handles the full pipeline (agent call, TTS, card display, resume listening).
   const confirmInFlight = useRef(false);
+  // Track the card type that was confirmed — used for card-type-aware reconfirm detection
+  const confirmedCardTypeRef = useRef<string | null>(null);
 
   const sendConfirmation = async (answer: "Yes" | "No") => {
     if (confirmInFlight.current || !agentRef.current?.isActive || !nativeRef.current) return;
@@ -248,6 +250,16 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       confirmationActiveRef.current = (answer === "Yes");
       setConfirmationActive(answer === "Yes"); // Mirror to state for re-render
       autoReconfirmCount.current = 0;
+
+      // Track what card type was confirmed for card-type-aware reconfirm detection
+      if (answer === "Yes") {
+        const lastTurn = turns[turns.length - 1];
+        if (lastTurn) {
+          confirmedCardTypeRef.current = parseResponseToCard(lastTurn.agentText).type;
+        }
+      } else {
+        confirmedCardTypeRef.current = null;
+      }
 
       nativeRef.current.sttContext = null; // Clear any STT context bias
       // Send explicit instruction so agent executes rather than re-confirms
@@ -372,6 +384,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       confirmationActiveRef.current = false;
       setConfirmationActive(false);
       autoReconfirmCount.current = 0;
+      confirmedCardTypeRef.current = null;
       currentTopicRef.current = "none"; // Reset topic tracking for fresh session
 
       if (nativeRef.current) { nativeRef.current.disconnect(); nativeRef.current = null; }
@@ -667,11 +680,22 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 "would you like to proceed", "do you want me to", "shall i credit",
                 "shall i process", "confirm that you", "ready to proceed",
                 "want to go ahead", "like me to credit", "like me to process",
+                // Added from production logs:
+                "shall i complete", "shall i confirm", "ready to be processed",
+                "should i proceed", "should i go ahead",
               ];
               const responseLower = response.toLowerCase();
               const isReconfirmation = reconfirmPhrases.some(p => responseLower.includes(p));
 
-              if (confirmationActiveRef.current && isReconfirmation && autoReconfirmCount.current < MAX_AUTO_RECONFIRMS) {
+              // Card-type fallback: if confirmation is active and the new response parses to
+              // the same card type with needsConfirmation, treat as re-ask even without matching phrases
+              const isCardTypeReask = (() => {
+                if (!confirmationActiveRef.current || !confirmedCardTypeRef.current) return false;
+                const card = parseResponseToCard(response);
+                return card.type === confirmedCardTypeRef.current && card.needsConfirmation;
+              })();
+
+              if (confirmationActiveRef.current && (isReconfirmation || isCardTypeReask) && autoReconfirmCount.current < MAX_AUTO_RECONFIRMS) {
                 autoReconfirmCount.current++;
                 console.log(`[voice] ⚡ Auto-reconfirm #${autoReconfirmCount.current}: agent re-asked "${response.substring(0, 60)}..." — silently confirming`);
                 // A9: Use serialization queue via injectText instead of fragile setTimeout.
@@ -691,10 +715,14 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               }
 
               // If we get here, the confirmation flow is done (agent gave a real response)
-              if (confirmationActiveRef.current && !isReconfirmation) {
+              // Completion keywords always end the flow; non-matching responses also end it
+              const isCompletionResponse = /\b(confirmed|completed?|processed|credited|done|success(?:fully)?|applied|booked)\b/i.test(response);
+
+              if (confirmationActiveRef.current && (isCompletionResponse || (!isReconfirmation && !isCardTypeReask))) {
                 confirmationActiveRef.current = false;
                 setConfirmationActive(false); // Mirror to state for re-render
                 autoReconfirmCount.current = 0;
+                confirmedCardTypeRef.current = null;
                 console.log("[voice] Confirmation flow complete — agent executed action");
               }
 
