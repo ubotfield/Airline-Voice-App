@@ -1112,9 +1112,16 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {card.upgrade.cost && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
                         )}
-                        {/* Seat Map — shown when upgrade needs confirmation */}
+                        {/* Seat Map — shown when upgrade needs confirmation. Tap or voice to select. */}
                         {card.needsConfirmation && !confirmedTurnIds.has(turn.id) && (
-                          <SeatMap selectedSeat={card.upgrade.seat} />
+                          <SeatMap
+                            selectedSeat={card.upgrade.seat}
+                            onSelectSeat={(seatId) => {
+                              if (nativeRef.current && agentRef.current?.isActive) {
+                                nativeRef.current.injectText(`I'll take seat ${seatId}`);
+                              }
+                            }}
+                          />
                         )}
                         {/* Tap-to-confirm buttons — only on FIRST unconfirmed card, never when auto-reconfirm active */}
                         {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && !confirmationActive && (
