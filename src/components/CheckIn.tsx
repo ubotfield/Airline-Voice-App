@@ -107,7 +107,7 @@ export const CheckIn: React.FC = () => {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 }}
-              className="bg-surface-container-lowest p-6 rounded-xl flex flex-col justify-between border-2 border-secondary/20"
+              className="bg-surface-container-lowest p-6 rounded-xl flex flex-col justify-between shadow-sm"
             >
               <div>
                 <div className="flex justify-between items-start mb-2">

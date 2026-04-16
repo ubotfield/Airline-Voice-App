@@ -1,11 +1,43 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
 import { Star, Plane, ArrowRight } from 'lucide-react';
 import { MicFilled } from './icons/MicFilled';
 
-export const SkyMiles: React.FC = () => {
+interface SkyMilesProps {
+  demoState?: { seat: string; cabin: string; miles: number; milesJustCredited: number; upgradeConfirmed: boolean; milesCredited: boolean };
+}
+
+/** Animated number that counts up from previous value to new value */
+function AnimatedCounter({ value, duration = 600 }: { value: number; duration?: number }) {
+  const [display, setDisplay] = useState(value);
+  const prevRef = useRef(value);
+
+  useEffect(() => {
+    const from = prevRef.current;
+    const to = value;
+    if (from === to) { setDisplay(to); return; }
+    prevRef.current = to;
+    const start = performance.now();
+    let raf: number;
+    const step = (now: number) => {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (to - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+
+  return <>{display.toLocaleString()}</>;
+}
+
+export const SkyMiles: React.FC<SkyMilesProps> = ({ demoState }) => {
+  const miles = demoState?.miles || 42850;
+  const isMilesCredited = demoState?.milesCredited === true;
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       {/* Hero SkyMiles Card */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
@@ -20,7 +52,9 @@ export const SkyMiles: React.FC = () => {
             <Star size={20} fill="currentColor" />
             <p className="font-bold tracking-tight uppercase text-xs">SkyMiles Medallion</p>
           </div>
-          <p className="text-5xl font-extrabold mb-2">42,850</p>
+          <p className="text-5xl font-extrabold mb-2">
+            <AnimatedCounter value={miles} />
+          </p>
           <p className="text-on-primary/60 text-sm font-medium">Miles Available</p>
 
           <div className="mt-8">
@@ -85,31 +119,36 @@ export const SkyMiles: React.FC = () => {
           { route: 'JFK → ATL', flight: 'DL 891', date: 'Mar 10, 2026', miles: '+1,200', status: 'Credited' },
           { route: 'ATL → SFO', flight: 'DL 1156', date: 'Feb 28, 2026', miles: '+3,450', status: 'Credited' },
           { route: 'LAX → ATL', flight: 'DL 520', date: 'Feb 20, 2026', miles: '+2,847', status: 'Credited' },
-        ].map((activity, i) => (
-          <motion.div
-            key={i}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2 + i * 0.05 }}
-            className="bg-surface-container-lowest rounded-xl p-4 flex items-center justify-between"
-          >
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-primary/5 flex items-center justify-center">
-                <Plane size={16} className="text-primary" />
+        ].map((activity, i) => {
+          // If miles were credited via voice, flip the ATL→LAX "Pending" to "Credited"
+          const displayStatus = (activity.status === 'Pending' && isMilesCredited) ? 'Credited' : activity.status;
+
+          return (
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.2 + i * 0.05 }}
+              className="bg-surface-container-lowest rounded-xl p-4 flex items-center justify-between"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-full bg-primary/5 flex items-center justify-center">
+                  <Plane size={16} className="text-primary" />
+                </div>
+                <div>
+                  <p className="font-bold text-sm text-primary">{activity.route}</p>
+                  <p className="text-[10px] text-on-surface-variant">{activity.flight} · {activity.date}</p>
+                </div>
               </div>
-              <div>
-                <p className="font-bold text-sm text-primary">{activity.route}</p>
-                <p className="text-[10px] text-on-surface-variant">{activity.flight} · {activity.date}</p>
+              <div className="text-right">
+                <p className="font-bold text-sm text-primary">{activity.miles}</p>
+                <p className={`text-[10px] font-bold ${displayStatus === 'Pending' ? 'text-amber-500' : 'text-green-600'}`}>
+                  {displayStatus === 'Credited' && activity.status === 'Pending' ? 'Credited ✓' : displayStatus}
+                </p>
               </div>
-            </div>
-            <div className="text-right">
-              <p className="font-bold text-sm text-primary">{activity.miles}</p>
-              <p className={`text-[10px] font-bold ${activity.status === 'Pending' ? 'text-amber-500' : 'text-green-600'}`}>
-                {activity.status}
-              </p>
-            </div>
-          </motion.div>
-        ))}
+            </motion.div>
+          );
+        })}
       </section>
     </div>
   );

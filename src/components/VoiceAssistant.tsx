@@ -7,6 +7,7 @@ import { AgentforceSession } from "../lib/agentforce-api";
 import { apiUrl } from "../lib/api-base";
 import { cn } from "../lib/utils";
 import { useNotifications, parseAgentResponse } from "../lib/notifications";
+import { SeatMap } from "./SeatMap";
 
 /**
  * VoiceAssistant V8 — Non-blocking listening + bottom sheet for results.
@@ -234,8 +235,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   // Track the card type that was confirmed — used for card-type-aware reconfirm detection
   const confirmedCardTypeRef = useRef<string | null>(null);
 
+  const haptic = (ms = 10) => { try { navigator?.vibrate?.(ms); } catch {} };
+
   const sendConfirmation = async (answer: "Yes" | "No") => {
     if (confirmInFlight.current || !agentRef.current?.isActive || !nativeRef.current) return;
+    haptic(); // Tactile feedback on confirmation tap
     confirmInFlight.current = true;
     try {
       // Mark ALL existing turns as confirmed so no duplicate buttons appear
@@ -724,6 +728,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 setConfirmationActive(false); // Mirror to state for re-render
                 autoReconfirmCount.current = 0;
                 confirmedCardTypeRef.current = null;
+                try { navigator?.vibrate?.(20); } catch {} // Haptic on completion
                 console.log("[voice] Confirmation flow complete — agent executed action");
               }
 
@@ -932,7 +937,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="relative w-full bg-surface-container-lowest rounded-t-[32px] shadow-2xl p-6 pb-36 max-h-[80vh] overflow-y-auto"
+              className="relative w-full bg-surface-container-lowest rounded-t-[32px] shadow-2xl p-6 pb-36 min-h-[40vh] max-h-[80vh] overflow-y-auto transition-all"
             >
               {/* Drag Handle */}
               <div className="w-12 h-1.5 bg-outline-variant/30 rounded-full mx-auto mb-6" />
@@ -1095,7 +1100,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
                     {/* ─ Upgrade Card ─ */}
                     {card.type === "upgrade" && card.upgrade && (
-                      <div className="bg-surface-container-high rounded-2xl p-5 border-l-4 border-secondary mb-4">
+                      <div className="bg-surface-container-high rounded-2xl p-5 mb-4">
                         <div className="flex items-center gap-2 mb-2">
                           <ArrowUpCircle size={18} className="text-secondary" />
                           <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">Upgrade</span>
@@ -1106,6 +1111,10 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         )}
                         {card.upgrade.cost && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
+                        )}
+                        {/* Seat Map — shown when upgrade needs confirmation */}
+                        {card.needsConfirmation && !confirmedTurnIds.has(turn.id) && (
+                          <SeatMap selectedSeat={card.upgrade.seat} />
                         )}
                         {/* Tap-to-confirm buttons — only on FIRST unconfirmed card, never when auto-reconfirm active */}
                         {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && !confirmationActive && (
@@ -1197,7 +1206,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
                   <p className="text-primary font-medium text-lg italic">"{currentUserText}"</p>
 
-                  {/* B8: Live caption OR B3: Skeleton shimmer */}
+                  {/* B8: Live caption OR B3: Contextual skeleton */}
                   {streamingCaption ? (
                     <motion.div
                       initial={{ opacity: 0 }}
@@ -1213,19 +1222,30 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       <p className="text-primary font-medium text-sm leading-relaxed">{streamingCaption}<motion.span animate={{ opacity: [1, 0] }} transition={{ repeat: Infinity, duration: 0.8 }} className="inline-block ml-0.5 w-1 h-4 bg-secondary/60 align-text-bottom" /></p>
                     </motion.div>
                   ) : (
-                    <div className="mt-4 bg-surface-container rounded-2xl p-5 animate-pulse">
+                    <div className="mt-4 bg-surface-container rounded-2xl p-5">
                       <div className="flex items-center gap-3 mb-4">
-                        <div className="w-8 h-8 rounded-full bg-outline-variant/20" />
-                        <div className="h-5 bg-outline-variant/20 rounded-lg w-2/3" />
+                        <div className="w-8 h-8 rounded-full bg-secondary/20 flex items-center justify-center">
+                          <Sparkles size={14} className="text-secondary animate-pulse" />
+                        </div>
+                        <span className="text-sm font-bold text-primary">
+                          {(() => {
+                            const q = (currentUserText || "").toLowerCase();
+                            if (q.includes("mile") || q.includes("loyalty") || q.includes("point") || q.includes("skymiles") || q.includes("credit"))
+                              return "Checking your SkyMiles account...";
+                            if (q.includes("upgrade") || q.includes("first class") || q.includes("seat"))
+                              return "Checking upgrade availability...";
+                            if (q.includes("flight") || q.includes("book") || q.includes("search"))
+                              return "Searching flights...";
+                            if (q.includes("bag") || q.includes("luggage"))
+                              return "Looking up baggage info...";
+                            return "Finding the best answer...";
+                          })()}
+                        </span>
                       </div>
-                      <div className="space-y-2.5">
+                      <div className="space-y-2.5 animate-pulse">
                         <div className="h-3 bg-outline-variant/15 rounded w-full" />
                         <div className="h-3 bg-outline-variant/15 rounded w-5/6" />
                         <div className="h-3 bg-outline-variant/15 rounded w-3/4" />
-                      </div>
-                      <div className="flex gap-2 mt-4">
-                        <div className="h-8 bg-outline-variant/10 rounded-full w-24" />
-                        <div className="h-8 bg-outline-variant/10 rounded-full w-20" />
                       </div>
                     </div>
                   )}

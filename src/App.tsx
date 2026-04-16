@@ -57,14 +57,15 @@ function AppContent() {
           <Trips
             onViewBoardingPass={() => setActiveTab('boardingpass')}
             onCheckIn={() => setActiveTab('checkin')}
+            demoState={demoState}
           />
         );
       case 'boardingpass':
-        return <BoardingPass />;
+        return <BoardingPass demoState={demoState} />;
       case 'checkin':
         return <CheckIn />;
       case 'skymiles':
-        return <SkyMiles />;
+        return <SkyMiles demoState={demoState} />;
       case 'profile':
         return <Profile />;
     }
@@ -178,7 +179,7 @@ function AppContent() {
       <DebugConsole />
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pb-8 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl border-t border-outline-variant/20 shadow-[0_-4px_20px_rgba(0,27,60,0.08)]">
+      <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pb-8 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl shadow-[0_-4px_24px_rgba(0,27,60,0.1)]">
         {[
           { id: 'home', icon: HomeIcon, label: 'Home' },
           { id: 'trips', icon: Plane, label: 'My Trips' },
@@ -204,12 +205,12 @@ function AppContent() {
             }`}
           >
             {tab.isSpecial ? (
-              <div className="relative -mt-5">
-                <div className={`w-14 h-14 rounded-full bg-secondary/10 flex items-center justify-center ${voiceOpen ? 'animate-pulse' : ''}`}>
-                  <MicFilled size={28} className="text-secondary" />
+              <div className="relative -mt-7">
+                <div className={`w-16 h-16 rounded-full bg-secondary flex items-center justify-center shadow-[0_0_0_6px_rgba(224,25,51,0.15)] ${voiceOpen ? 'animate-pulse' : ''}`}>
+                  <MicFilled size={28} className="text-white" />
                 </div>
-                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-secondary rounded-full animate-ping" />
-                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-secondary rounded-full" />
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-white rounded-full animate-ping" />
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-white rounded-full" />
               </div>
             ) : (
               <tab.icon size={22} fill={activeNavTab === tab.id ? "currentColor" : "none"} />

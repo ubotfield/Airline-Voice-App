@@ -1,13 +1,17 @@
 import React from 'react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Plane, Clock, MapPin, ChevronRight } from 'lucide-react';
 
 interface TripsProps {
   onViewBoardingPass: () => void;
   onCheckIn: () => void;
+  demoState?: { seat: string; cabin: string; miles: number; milesJustCredited: number; upgradeConfirmed: boolean; milesCredited: boolean };
 }
 
-export const Trips: React.FC<TripsProps> = ({ onViewBoardingPass, onCheckIn }) => {
+export const Trips: React.FC<TripsProps> = ({ onViewBoardingPass, onCheckIn, demoState }) => {
+  const seat = demoState?.seat || "24B";
+  const isUpgraded = demoState?.upgradeConfirmed === true;
+
   return (
     <div className="space-y-8">
       <div>
@@ -19,7 +23,7 @@ export const Trips: React.FC<TripsProps> = ({ onViewBoardingPass, onCheckIn }) =
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm border border-outline-variant/10"
+        className="bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm"
       >
         <div className="bg-gradient-to-r from-primary-container to-primary p-6 text-on-primary">
           <div className="flex items-center gap-2 mb-4">
@@ -59,9 +63,31 @@ export const Trips: React.FC<TripsProps> = ({ onViewBoardingPass, onCheckIn }) =
             </div>
             <div>
               <p className="text-[10px] text-on-surface-variant font-bold uppercase">Seat</p>
-              <p className="font-bold text-primary text-sm">24B</p>
+              <motion.p
+                key={seat}
+                initial={{ scale: 0.8 }}
+                animate={{ scale: 1 }}
+                className={`font-bold text-sm ${isUpgraded ? 'text-[#d4af37]' : 'text-primary'}`}
+              >
+                {seat}
+              </motion.p>
             </div>
           </div>
+
+          {/* Cabin badge when upgraded */}
+          <AnimatePresence>
+            {isUpgraded && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="bg-gradient-to-r from-[#d4af37]/10 to-[#d4af37]/5 rounded-lg px-4 py-2 flex items-center gap-2"
+              >
+                <span className="text-[10px] font-black uppercase tracking-widest text-[#b8960c]">First Class</span>
+                <span className="text-[10px] text-[#b8960c]/60">· Seat {seat}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           <div className="flex gap-3">
             <button

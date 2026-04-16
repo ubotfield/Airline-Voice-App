@@ -1,7 +1,32 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, Plane, Star, Clock, Shield, X, CheckCircle, Mic } from 'lucide-react';
 import { MicFilled } from './icons/MicFilled';
+
+/** Animated number that counts up from previous value to new value */
+function AnimatedCounter({ value, duration = 600 }: { value: number; duration?: number }) {
+  const [display, setDisplay] = useState(value);
+  const prevRef = useRef(value);
+
+  useEffect(() => {
+    const from = prevRef.current;
+    const to = value;
+    if (from === to) { setDisplay(to); return; }
+    prevRef.current = to;
+    const start = performance.now();
+    let raf: number;
+    const step = (now: number) => {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      setDisplay(Math.round(from + (to - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+
+  return <>{display.toLocaleString()}</>;
+}
 
 interface HomeProps {
   onNavigate: (tab: string) => void;
@@ -66,7 +91,7 @@ function extractVoiceResults(agentText: string): Array<{ icon: 'check' | 'seat' 
 
 export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVoiceResult, demoState }) => {
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       {/* Hero: Upcoming Flight Card */}
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <motion.div
@@ -143,7 +168,7 @@ export const Home: React.FC<HomeProps> = ({ onNavigate, voiceResult, onDismissVo
               <p className="font-bold tracking-tight uppercase text-xs">SkyMiles Medallion</p>
             </div>
             <p className="text-4xl font-extrabold mb-1">
-              {(demoState?.miles || 42850).toLocaleString()}
+              <AnimatedCounter value={demoState?.miles || 42850} />
               {demoState?.milesJustCredited ? (
                 <motion.span
                   key={demoState.milesJustCredited}
