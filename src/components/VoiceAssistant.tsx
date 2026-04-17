@@ -785,25 +785,32 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               // If we get here, the confirmation flow is done (agent gave a real response)
               // Completion keywords always end the flow; non-matching responses also end it
               const isCompletionResponse = /\b(confirmed|completed?|processed|credited|done|success(?:fully)?|applied|booked)\b/i.test(response);
+              const isFollowUpPrompt = /anything else|how else|what else|can i help|further assist/i.test(response);
 
-              if (confirmationActiveRef.current && (isCompletionResponse || (!isReconfirmation && !isCardTypeReask))) {
+              if (confirmationActiveRef.current && (isCompletionResponse || isFollowUpPrompt || (!isReconfirmation && !isCardTypeReask))) {
                 confirmationActiveRef.current = false;
                 setConfirmationActive(false); // Mirror to state for re-render
                 autoReconfirmCount.current = 0;
                 confirmedCardTypeRef.current = null;
+                lastSelectedSeatRef.current = null;
                 try { navigator?.vibrate?.(20); } catch {} // Haptic on completion
                 console.log("[voice] Confirmation flow complete — agent executed action");
 
-                // BUG FIX: Force pipeline restart after confirmation flow completes.
-                // The post-TTS cooldown + topic-switch session reset can leave the
-                // recording pipeline stalled. Explicitly kick it after a short delay.
+                // Force pipeline restart after confirmation flow completes.
                 setTimeout(() => {
                   if (nativeRef.current?.isConnected && agentRef.current?.isActive) {
                     console.log("[voice] Post-confirmation: forcing pipeline restart");
-                    // Reset topic tracking so the next question gets fresh classification
                     currentTopicRef.current = "none";
                   }
                 }, 500);
+              }
+
+              // Follow-up readiness: reset all confirmation state when agent
+              // signals completion or asks "anything else?" — even outside active confirmation
+              if (!confirmationActiveRef.current && (isCompletionResponse || isFollowUpPrompt)) {
+                lastSelectedSeatRef.current = null;
+                confirmInFlight.current = false;
+                currentTopicRef.current = "none";
               }
 
               // Add conversation turn
@@ -1219,10 +1226,23 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     {card.type === "upgrade" && card.upgrade && (() => {
                       const isConfirmed = card.headline === "Your upgrade is confirmed!";
                       const hasPricing = !!(card.upgrade.milesAmount && card.upgrade.copay && card.upgrade.cashPrice);
-                      const seatAlreadySelected = !!lastSelectedSeatRef.current;
-                      const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive && !seatAlreadySelected;
-                      // Compact-only: seat already picked, agent asking to confirm → show ONLY Yes/No, no duplicate card
-                      const showCompactConfirmOnly = seatAlreadySelected && card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive;
+                      const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive;
+                      // Only the LATEST upgrade turn shows the full card — earlier ones collapse
+                      const lastUpgradeIdx = turns.findLastIndex(t => parseResponseToCard(t.agentText).type === "upgrade");
+                      const isLatestUpgradeTurn = lastUpgradeIdx === turnIndex;
+
+                      // Collapsed earlier upgrade turn — just show a one-liner
+                      if (!isLatestUpgradeTurn && !isConfirmed) {
+                        return (
+                          <div className="bg-surface-container rounded-xl px-4 py-2.5 mb-2 flex items-center gap-2">
+                            <ArrowUpCircle size={14} className="text-secondary flex-shrink-0" />
+                            <p className="text-xs text-on-surface-variant truncate">
+                              {card.upgrade.cabin}{card.upgrade.seat ? ` · Seat ${card.upgrade.seat}` : ""}{card.upgrade.cost ? ` · ${card.upgrade.cost}` : ""}
+                            </p>
+                          </div>
+                        );
+                      }
+
                       return (
                       <>
                       {/* Show inline boarding pass for confirmed upgrades */}
@@ -1233,46 +1253,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           milesUsed={card.upgrade.milesAmount ? `${Number(card.upgrade.milesAmount.replace(/,/g, '')).toLocaleString()}` : undefined}
                           newBalance={undefined}
                         />
-                      ) : showCompactConfirmOnly ? (
-                        /* Compact confirmation — seat already selected, no duplicate card */
-                        <motion.div
-                          initial={{ opacity: 0, y: 12 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                          className="bg-surface-container-high rounded-2xl p-5 mb-4"
-                        >
-                          <div className="flex items-center gap-2 mb-3">
-                            <ArrowUpCircle size={18} className="text-secondary" />
-                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">
-                              Confirm Upgrade
-                            </span>
-                          </div>
-                          <p className="text-sm text-on-surface-variant mb-1">
-                            {card.upgrade.cabin} · Seat <span className="font-bold text-primary">{lastSelectedSeatRef.current}</span>
-                          </p>
-                          {card.upgrade.cost && (
-                            <p className="text-xl font-black text-primary mb-4">{card.upgrade.cost}</p>
-                          )}
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => sendConfirmation("Yes")}
-                              className="flex-1 bg-primary text-white py-3 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
-                            >
-                              Yes, confirm
-                            </button>
-                            <button
-                              onClick={() => {
-                                lastSelectedSeatRef.current = null;
-                                if (nativeRef.current && agentRef.current?.isActive) {
-                                  nativeRef.current.injectText("No, let me pick a different seat");
-                                }
-                              }}
-                              className="flex-1 bg-surface-container text-on-surface-variant py-3 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
-                            >
-                              Change seat
-                            </button>
-                          </div>
-                        </motion.div>
                       ) : (
                       <div className="bg-surface-container-high rounded-2xl p-5 mb-4">
                         <div className="flex items-center gap-2 mb-2">
@@ -1289,15 +1269,13 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                         {card.upgrade.cost && !showInteractiveMap && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
                         )}
-                        {/* Interactive Seat Map with integrated pricing toggle + CTA */}
+                        {/* Interactive Seat Map — seat tap is visual only, Confirm button sends ONE combined message */}
                         {showInteractiveMap && (
                           <SeatMap
                             selectedSeat={card.upgrade.seat}
                             onSelectSeat={(seatId) => {
+                              // Visual selection only — do NOT send to agent
                               lastSelectedSeatRef.current = seatId;
-                              if (nativeRef.current && agentRef.current?.isActive) {
-                                nativeRef.current.injectText(`I'll take seat ${seatId}`);
-                              }
                             }}
                             pricing={hasPricing ? {
                               miles: Number(card.upgrade.milesAmount!.replace(/,/g, '')).toLocaleString(),
@@ -1305,7 +1283,26 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                               cash: card.upgrade.cashPrice!,
                             } : undefined}
                             onConfirm={(method) => {
-                              sendConfirmation("Yes");
+                              const seat = lastSelectedSeatRef.current || card.upgrade.seat;
+                              // Mark all turns confirmed
+                              setTurns(prev => {
+                                const newConfirmed = new Set(confirmedTurnIds);
+                                prev.forEach(t => newConfirmed.add(t.id));
+                                setConfirmedTurnIds(newConfirmed);
+                                return prev;
+                              });
+                              confirmationActiveRef.current = true;
+                              setConfirmationActive(true);
+                              confirmedCardTypeRef.current = "upgrade";
+                              confirmInFlight.current = true;
+                              haptic();
+                              // ONE combined message — seat choice + confirmation
+                              if (nativeRef.current && agentRef.current?.isActive) {
+                                nativeRef.current.injectText(
+                                  `Yes, I'd like seat ${seat}. Go ahead and process the upgrade now.`
+                                );
+                              }
+                              setTimeout(() => { confirmInFlight.current = false; }, 2000);
                             }}
                           />
                         )}
