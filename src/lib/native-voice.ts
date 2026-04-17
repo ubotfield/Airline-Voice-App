@@ -1363,7 +1363,15 @@ export class NativeVoiceService {
       /^(certainly|absolutely|of course)\.?\s*$/i,
       /^(let me|allow me)\s/i,
     ];
-    if (hallucinationPhrases.some(p => p.test(cleanedText))) {
+    // ── Confirmation bypass: When awaiting user confirmation, let "yes"/"no" etc. through ──
+    const isConfirmationWord = /^(okay|ok|sure|yes|no|yeah|yep|nope|go ahead|do it|confirm|certainly|absolutely|of course)\.?\s*$/i.test(cleanedText);
+    const awaitingConfirmation = this.sttContext === "awaiting_confirmation";
+    if (isConfirmationWord && awaitingConfirmation) {
+      dbg(`✅ Confirmation bypass: "${cleanedText}" allowed through (sttContext=awaiting_confirmation)`);
+      // Clear the context so subsequent ambient "yes" gets filtered again
+      this.sttContext = null;
+      // Don't return — fall through to process this as real user input
+    } else if (hallucinationPhrases.some(p => p.test(cleanedText))) {
       dbg(`⚠️ STT hallucination filter: "${userText}" → discarding (matched hallucination phrase)`);
       // Track consecutive identical hallucinations — if the same phantom text keeps appearing,
       // the mic is picking up persistent ambient noise. Pause longer to break the loop.

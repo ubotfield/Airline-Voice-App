@@ -294,6 +294,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const confirmInFlight = useRef(false);
   // Track the card type that was confirmed — used for card-type-aware reconfirm detection
   const confirmedCardTypeRef = useRef<string | null>(null);
+  // Track last selected seat — prevents duplicate seat map when agent confirms the selection
+  const lastSelectedSeatRef = useRef<string | null>(null);
 
   const haptic = (ms = 10) => { try { navigator?.vibrate?.(ms); } catch {} };
 
@@ -326,6 +328,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       }
 
       nativeRef.current.sttContext = null; // Clear any STT context bias
+      lastSelectedSeatRef.current = null; // Reset seat selection after confirmation
       // Send explicit instruction so agent executes rather than re-confirms
       const explicitMessage = answer === "Yes"
         ? "Yes, go ahead and process it now."
@@ -893,6 +896,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     };
   }, []);
 
+  // ─── Set STT context when confirmation is pending ───
+  // This tells the hallucination filter to allow "yes"/"no" through
+  useEffect(() => {
+    if (!nativeRef.current || turns.length === 0) return;
+    const lastTurn = turns[turns.length - 1];
+    const card = parseResponseToCard(lastTurn.agentText);
+    if (card.needsConfirmation && !confirmedTurnIds.has(lastTurn.id) && !confirmationActive) {
+      nativeRef.current.sttContext = "awaiting_confirmation";
+    }
+  }, [turns, confirmedTurnIds, confirmationActive]);
+
   // ─── V8 Overlay logic ───────────────────────────────────────
   // Bottom sheet with blur ONLY when there's content to show
   const hasContent = turns.length > 0 || !!currentUserText || hasError;
@@ -1205,7 +1219,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     {card.type === "upgrade" && card.upgrade && (() => {
                       const isConfirmed = card.headline === "Your upgrade is confirmed!";
                       const hasPricing = !!(card.upgrade.milesAmount && card.upgrade.copay && card.upgrade.cashPrice);
-                      const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive;
+                      const seatAlreadySelected = !!lastSelectedSeatRef.current;
+                      const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive && !seatAlreadySelected;
                       return (
                       <>
                       {/* Show inline boarding pass for confirmed upgrades */}
@@ -1237,6 +1252,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           <SeatMap
                             selectedSeat={card.upgrade.seat}
                             onSelectSeat={(seatId) => {
+                              lastSelectedSeatRef.current = seatId;
                               if (nativeRef.current && agentRef.current?.isActive) {
                                 nativeRef.current.injectText(`I'll take seat ${seatId}`);
                               }
@@ -1250,6 +1266,38 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                               sendConfirmation("Yes");
                             }}
                           />
+                        )}
+                        {/* Compact confirmation — seat already selected, agent asking to confirm */}
+                        {seatAlreadySelected && card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                            className="mt-4 pt-4 border-t border-outline-variant/20"
+                          >
+                            <p className="text-sm text-on-surface-variant mb-3 text-center">
+                              Confirm seat <span className="font-bold text-primary">{lastSelectedSeatRef.current}</span>?
+                            </p>
+                            <div className="flex gap-3">
+                              <button
+                                onClick={() => sendConfirmation("Yes")}
+                                className="flex-1 bg-primary text-white py-2.5 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
+                              >
+                                Yes, confirm
+                              </button>
+                              <button
+                                onClick={() => {
+                                  lastSelectedSeatRef.current = null;
+                                  if (nativeRef.current && agentRef.current?.isActive) {
+                                    nativeRef.current.injectText("No, let me pick a different seat");
+                                  }
+                                }}
+                                className="flex-1 bg-surface-container text-on-surface-variant py-2.5 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
+                              >
+                                Change seat
+                              </button>
+                            </div>
+                          </motion.div>
                         )}
                         {/* Processing indicator after confirm */}
                         {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActive) && (
