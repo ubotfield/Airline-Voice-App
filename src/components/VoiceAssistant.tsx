@@ -9,6 +9,9 @@ import { cn } from "../lib/utils";
 import { useNotifications, parseAgentResponse } from "../lib/notifications";
 import { SeatMap } from "./SeatMap";
 import { InlineBoardingPass } from "./InlineBoardingPass";
+import { FlightSelectionCard, DEMO_RECENT_FLIGHTS } from "./FlightSelectionCard";
+import type { RecentFlight } from "./FlightSelectionCard";
+import { MilesCreditConfirmation } from "./MilesCreditConfirmation";
 
 /**
  * VoiceAssistant V8 — Non-blocking listening + bottom sheet for results.
@@ -20,7 +23,7 @@ import { InlineBoardingPass } from "./InlineBoardingPass";
  */
 
 /* ── Result card type detection ─────────────────────────────── */
-type CardType = "flight" | "miles" | "upgrade" | "baggage" | "generic";
+type CardType = "flight" | "miles" | "miles_flight_select" | "miles_credited" | "upgrade" | "baggage" | "generic";
 
 interface ParsedCard {
   type: CardType;
@@ -28,6 +31,7 @@ interface ParsedCard {
   flight?: { from: string; to: string; number: string; depTime: string; arrTime: string; duration: string; price: string };
   miles?: { balance: string; tier: string; progress?: string };
   upgrade?: { cabin: string; seat: string; cost: string; milesAmount?: string; copay?: string; cashPrice?: string };
+  milesCredit?: { milesAdded: number; previousBalance: number; newBalance: number; flightNumber?: string; route?: string; flightDate?: string; pnr?: string; transactionRef?: string };
   chips: string[];
   /** True when the agent is asking user to confirm an action (credit miles, process upgrade, etc.) */
   needsConfirmation?: boolean;
@@ -93,6 +97,58 @@ function parseResponseToCard(text: string): ParsedCard {
       },
       chips: ["View seat map", "Upgrade another flight", "Check status"],
       needsConfirmation: isConfirmationPrompt,
+    };
+  }
+
+  // ─── Miles Credit Confirmation — "Done! X miles have been added" (BEFORE generic miles) ───
+  const isMilesCredited = (lower.includes("miles") || lower.includes("credited")) &&
+    (lower.includes("have been added") || lower.includes("have been credited") ||
+     lower.includes("successfully credited") || lower.includes("added to your account") ||
+     lower.includes("balance is now") || lower.includes("new balance") ||
+     (lower.includes("done") && lower.includes("miles") && milesMatch));
+  if (isMilesCredited && milesMatch) {
+    const creditedMiles = parseInt(milesMatch[1].replace(/,/g, ""), 10);
+    // Try to extract new balance — look for the SECOND miles number or "balance is X"
+    const balanceMatch = text.match(/balance\s+(?:is\s+)?(?:now\s+)?([\d,]+)/i) ||
+      text.match(/→\s*([\d,]+)/);
+    const allMilesNums = [...text.matchAll(/([\d,]+)\s*miles/gi)].map(m => parseInt(m[1].replace(/,/g, ""), 10));
+    const newBal = balanceMatch
+      ? parseInt(balanceMatch[1].replace(/,/g, ""), 10)
+      : allMilesNums.length >= 2 ? allMilesNums[allMilesNums.length - 1] : creditedMiles + 42850;
+    const prevBal = newBal - creditedMiles;
+    // Extract flight info if present
+    const flNumMatch = text.match(/DL\s*\d+/i);
+    const routeM = text.match(/(\b[A-Z]{3})\b.*?(?:to|→|->)\s*(\b[A-Z]{3})\b/i);
+    const pnrM = text.match(/PNR[:\s]*([A-Z0-9]{5,6})/i) || text.match(/\b([A-Z]{5,6})\b/);
+    const txnM = text.match(/TXN[-\w]+/i);
+
+    return {
+      type: "miles_credited",
+      headline: "Miles Successfully Credited!",
+      milesCredit: {
+        milesAdded: creditedMiles,
+        previousBalance: prevBal,
+        newBalance: newBal,
+        flightNumber: flNumMatch?.[0] || "DL 423",
+        route: routeM ? `${routeM[1]} → ${routeM[2]}` : "ATL → LAX",
+        flightDate: "March 28, 2025",
+        pnr: pnrM?.[1] || "GHTK92",
+        transactionRef: txnM?.[0] || "TXN-88291-DELTA",
+      },
+      chips: ["Check another flight", "View SkyMiles account"],
+    };
+  }
+
+  // ─── Flight Selection — "recent flights" / "which one" (BEFORE generic miles) ───
+  const isFlightSelection = (lower.includes("recent flight") || lower.includes("recently flown") ||
+    lower.includes("which one") || lower.includes("which flight") ||
+    lower.includes("select the flight") || lower.includes("pull up your") ||
+    lower.includes("here are your") || lower.includes("let me pull up"));
+  if (isFlightSelection && (lower.includes("flight") || lower.includes("miles"))) {
+    return {
+      type: "miles_flight_select",
+      headline: "Here are your recent flights.",
+      chips: [],
     };
   }
 
@@ -994,6 +1050,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       "mb-6 cursor-grab active:cursor-grabbing",
                       card.type === "flight" && "border-l-2 border-secondary/30 pl-3",
                       card.type === "miles" && "border-l-2 border-[#d4af37]/30 pl-3",
+                      card.type === "miles_flight_select" && "border-l-2 border-[#d4af37]/30 pl-3",
+                      card.type === "miles_credited" && "border-l-2 border-green-500/30 pl-3",
                       card.type === "upgrade" && "border-l-2 border-[#7c3aed]/30 pl-3",
                       card.type === "baggage" && "border-l-2 border-primary/20 pl-3",
                     )}
@@ -1113,6 +1171,34 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           </motion.div>
                         )}
                       </div>
+                    )}
+
+                    {/* ─ Flight Selection Card (Missing Miles Use Case) ─ */}
+                    {card.type === "miles_flight_select" && (
+                      <FlightSelectionCard
+                        flights={DEMO_RECENT_FLIGHTS}
+                        onSelectFlight={(flight: RecentFlight) => {
+                          if (nativeRef.current && agentRef.current?.isActive) {
+                            nativeRef.current.injectText(
+                              `The ${flight.fromCity} to ${flight.toCity} flight on ${flight.date}`
+                            );
+                          }
+                        }}
+                      />
+                    )}
+
+                    {/* ─ Miles Credit Confirmation Card ─ */}
+                    {card.type === "miles_credited" && card.milesCredit && (
+                      <MilesCreditConfirmation
+                        milesAdded={card.milesCredit.milesAdded}
+                        previousBalance={card.milesCredit.previousBalance}
+                        newBalance={card.milesCredit.newBalance}
+                        flightNumber={card.milesCredit.flightNumber}
+                        route={card.milesCredit.route}
+                        flightDate={card.milesCredit.flightDate}
+                        pnr={card.milesCredit.pnr}
+                        transactionRef={card.milesCredit.transactionRef}
+                      />
                     )}
 
                     {/* ─ Upgrade Card ─ */}
