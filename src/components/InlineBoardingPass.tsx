@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { Plane, Smartphone } from 'lucide-react';
+import { DeltaLogo } from './icons/DeltaLogo';
 
 interface InlineBoardingPassProps {
   seat: string;
@@ -36,9 +37,7 @@ export const InlineBoardingPass: React.FC<InlineBoardingPassProps> = ({
         {/* Delta logo + cabin badge */}
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className="text-secondary">
-              <path d="M12 2L2 22h20L12 2z" />
-            </svg>
+            <DeltaLogo size={16} />
             <span className="font-headline font-extrabold text-sm tracking-tight">DELTA</span>
           </div>
           {isFirstClass && (
@@ -106,7 +105,7 @@ export const InlineBoardingPass: React.FC<InlineBoardingPassProps> = ({
 
         {/* Barcode placeholder */}
         <div className="mt-3 flex flex-col items-center">
-          <div className="w-full h-10 bg-[repeating-linear-gradient(90deg,#001e40_0px,#001e40_2px,transparent_2px,transparent_4px)] opacity-80 rounded" />
+          <div className="w-full h-10 bg-[repeating-linear-gradient(90deg,#003366_0px,#003366_2px,transparent_2px,transparent_4px)] opacity-80 rounded" />
           <p className="mt-1 font-mono text-[7px] text-on-surface-variant tracking-[0.15em]">
             M1JOHNSON/MARCUS GHTK92 ATLJFKDL 0204 106Y008C002A
           </p>
