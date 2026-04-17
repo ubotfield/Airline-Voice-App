@@ -1221,6 +1221,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       const hasPricing = !!(card.upgrade.milesAmount && card.upgrade.copay && card.upgrade.cashPrice);
                       const seatAlreadySelected = !!lastSelectedSeatRef.current;
                       const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive && !seatAlreadySelected;
+                      // Compact-only: seat already picked, agent asking to confirm → show ONLY Yes/No, no duplicate card
+                      const showCompactConfirmOnly = seatAlreadySelected && card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive;
                       return (
                       <>
                       {/* Show inline boarding pass for confirmed upgrades */}
@@ -1231,6 +1233,46 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           milesUsed={card.upgrade.milesAmount ? `${Number(card.upgrade.milesAmount.replace(/,/g, '')).toLocaleString()}` : undefined}
                           newBalance={undefined}
                         />
+                      ) : showCompactConfirmOnly ? (
+                        /* Compact confirmation — seat already selected, no duplicate card */
+                        <motion.div
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                          className="bg-surface-container-high rounded-2xl p-5 mb-4"
+                        >
+                          <div className="flex items-center gap-2 mb-3">
+                            <ArrowUpCircle size={18} className="text-secondary" />
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">
+                              Confirm Upgrade
+                            </span>
+                          </div>
+                          <p className="text-sm text-on-surface-variant mb-1">
+                            {card.upgrade.cabin} · Seat <span className="font-bold text-primary">{lastSelectedSeatRef.current}</span>
+                          </p>
+                          {card.upgrade.cost && (
+                            <p className="text-xl font-black text-primary mb-4">{card.upgrade.cost}</p>
+                          )}
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => sendConfirmation("Yes")}
+                              className="flex-1 bg-primary text-white py-3 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
+                            >
+                              Yes, confirm
+                            </button>
+                            <button
+                              onClick={() => {
+                                lastSelectedSeatRef.current = null;
+                                if (nativeRef.current && agentRef.current?.isActive) {
+                                  nativeRef.current.injectText("No, let me pick a different seat");
+                                }
+                              }}
+                              className="flex-1 bg-surface-container text-on-surface-variant py-3 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
+                            >
+                              Change seat
+                            </button>
+                          </div>
+                        </motion.div>
                       ) : (
                       <div className="bg-surface-container-high rounded-2xl p-5 mb-4">
                         <div className="flex items-center gap-2 mb-2">
@@ -1266,38 +1308,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                               sendConfirmation("Yes");
                             }}
                           />
-                        )}
-                        {/* Compact confirmation — seat already selected, agent asking to confirm */}
-                        {seatAlreadySelected && card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                            className="mt-4 pt-4 border-t border-outline-variant/20"
-                          >
-                            <p className="text-sm text-on-surface-variant mb-3 text-center">
-                              Confirm seat <span className="font-bold text-primary">{lastSelectedSeatRef.current}</span>?
-                            </p>
-                            <div className="flex gap-3">
-                              <button
-                                onClick={() => sendConfirmation("Yes")}
-                                className="flex-1 bg-primary text-white py-2.5 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
-                              >
-                                Yes, confirm
-                              </button>
-                              <button
-                                onClick={() => {
-                                  lastSelectedSeatRef.current = null;
-                                  if (nativeRef.current && agentRef.current?.isActive) {
-                                    nativeRef.current.injectText("No, let me pick a different seat");
-                                  }
-                                }}
-                                className="flex-1 bg-surface-container text-on-surface-variant py-2.5 rounded-xl font-headline font-bold text-sm active:scale-[0.97] transition-transform"
-                              >
-                                Change seat
-                              </button>
-                            </div>
-                          </motion.div>
                         )}
                         {/* Processing indicator after confirm */}
                         {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActive) && (

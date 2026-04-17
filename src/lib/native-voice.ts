@@ -1029,10 +1029,9 @@ export class NativeVoiceService {
       const sttPayload: any = { audio: base64, mimeType: mimeType.split(";")[0] };
       if (this.sttContext) {
         sttPayload.context = this.sttContext;
-        dbg(`STT context hint: ${this.sttContext} (will clear after this use)`);
-        // Self-clear: context applies ONLY to the immediate next STT call.
-        // Prevents stale context from affecting subsequent natural speech turns.
-        this.sttContext = null;
+        dbg(`STT context hint: ${this.sttContext} (cleared by routeToAgent after bypass check)`);
+        // NOTE: Do NOT self-clear here. routeToAgent() needs to read sttContext
+        // for the confirmation bypass check before clearing it.
       }
       const res = await fetch(apiUrl("/api/stt"), {
         method: "POST",
@@ -1405,6 +1404,11 @@ export class NativeVoiceService {
     // Real user text passed filters — reset consecutive hallucination tracker
     this.consecutiveSameDiscard = 0;
     this.lastDiscardedText = "";
+    // Clear any remaining sttContext now that we've passed the filter checks
+    if (this.sttContext) {
+      dbg(`Clearing sttContext="${this.sttContext}" after filter pass-through`);
+      this.sttContext = null;
+    }
 
     // ══════════════════════════════════════════════════════════════
     // REPEAT-ECHO DETECTION — if STT returns the exact same text 2+ times

@@ -149,8 +149,13 @@ function AppContent() {
           const lower = result.agentText.toLowerCase();
 
           // Upgrade confirmed → update seat + cabin on home screen
-          if ((lower.includes("upgrade") && (lower.includes("confirmed") || lower.includes("complete"))) ||
-              lower.includes("upgraded to first class") || lower.includes("upgrade has been")) {
+          const isUpgradeConfirmed =
+            (lower.includes("upgrade") && (lower.includes("confirmed") || lower.includes("complete") || lower.includes("processed") || lower.includes("done") || lower.includes("all set"))) ||
+            lower.includes("upgraded to first class") || lower.includes("upgrade has been") ||
+            lower.includes("upgrade is confirmed") || lower.includes("seat has been upgraded") ||
+            (lower.includes("boarding pass") && lower.includes("upgrade")) ||
+            (lower.includes("first class") && (lower.includes("confirmed") || lower.includes("enjoy") || lower.includes("all set")));
+          if (isUpgradeConfirmed) {
             const seatMatch = result.agentText.match(/seat\s*(\w{2,4})/i);
             setDemoState(prev => ({
               ...prev,
@@ -161,7 +166,11 @@ function AppContent() {
           }
 
           // Miles credited → update miles balance on home screen
-          if (lower.includes("credited") && lower.includes("miles")) {
+          const isMilesCredited =
+            (lower.includes("miles") && (lower.includes("credited") || lower.includes("added") || lower.includes("applied"))) ||
+            (lower.includes("balance") && lower.includes("updated")) ||
+            (lower.includes("done") && lower.includes("miles"));
+          if (isMilesCredited) {
             const milesMatch = result.agentText.match(/([\d,]+)\s*miles/i);
             const credited = milesMatch ? parseInt(milesMatch[1].replace(/,/g, ""), 10) : 2847;
             setDemoState(prev => ({
