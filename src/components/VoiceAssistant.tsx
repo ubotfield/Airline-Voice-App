@@ -8,6 +8,7 @@ import { apiUrl } from "../lib/api-base";
 import { cn } from "../lib/utils";
 import { useNotifications, parseAgentResponse } from "../lib/notifications";
 import { SeatMap } from "./SeatMap";
+import { InlineBoardingPass } from "./InlineBoardingPass";
 
 /**
  * VoiceAssistant V8 — Non-blocking listening + bottom sheet for results.
@@ -26,7 +27,7 @@ interface ParsedCard {
   headline: string;
   flight?: { from: string; to: string; number: string; depTime: string; arrTime: string; duration: string; price: string };
   miles?: { balance: string; tier: string; progress?: string };
-  upgrade?: { cabin: string; seat: string; cost: string };
+  upgrade?: { cabin: string; seat: string; cost: string; milesAmount?: string; copay?: string; cashPrice?: string };
   chips: string[];
   /** True when the agent is asking user to confirm an action (credit miles, process upgrade, etc.) */
   needsConfirmation?: boolean;
@@ -86,6 +87,9 @@ function parseResponseToCard(text: string): ParsedCard {
         cabin: cabinMatch?.[1] || "Premium cabin",
         seat: seatMatch?.[1] || "",
         cost: costDisplay,
+        milesAmount: milesAndCopay?.[1] || milesMatch?.[1] || "",
+        copay: milesAndCopay?.[2] || "",
+        cashPrice: cashPrice?.raw || "",
       },
       chips: ["View seat map", "Upgrade another flight", "Check status"],
       needsConfirmation: isConfirmationPrompt,
@@ -1114,24 +1118,36 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     {/* ─ Upgrade Card ─ */}
                     {card.type === "upgrade" && card.upgrade && (() => {
                       const isConfirmed = card.headline === "Your upgrade is confirmed!";
+                      const hasPricing = !!(card.upgrade.milesAmount && card.upgrade.copay && card.upgrade.cashPrice);
+                      const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive;
                       return (
+                      <>
+                      {/* Show inline boarding pass for confirmed upgrades */}
+                      {isConfirmed ? (
+                        <InlineBoardingPass
+                          seat={card.upgrade.seat || "2A"}
+                          cabin={card.upgrade.cabin}
+                          milesUsed={card.upgrade.milesAmount ? `${Number(card.upgrade.milesAmount.replace(/,/g, '')).toLocaleString()}` : undefined}
+                          newBalance={undefined}
+                        />
+                      ) : (
                       <div className="bg-surface-container-high rounded-2xl p-5 mb-4">
                         <div className="flex items-center gap-2 mb-2">
-                          <ArrowUpCircle size={18} className={isConfirmed ? "text-green-500" : "text-secondary"} />
+                          <ArrowUpCircle size={18} className="text-secondary" />
                           <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">
-                            {isConfirmed ? "Upgrade Confirmed" : "Upgrade"}
+                            Upgrade
                           </span>
                         </div>
                         <p className="text-lg font-bold text-primary mb-1">{card.upgrade.cabin}</p>
-                        {card.upgrade.seat && (
+                        {card.upgrade.seat && !showInteractiveMap && (
                           <p className="text-sm text-on-surface-variant">Seat {card.upgrade.seat}</p>
                         )}
-                        {/* Hide pricing on confirmed cards — prevents double-pricing display */}
-                        {card.upgrade.cost && !isConfirmed && (
+                        {/* Show pricing text only when no interactive map with toggle */}
+                        {card.upgrade.cost && !showInteractiveMap && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
                         )}
-                        {/* Seat Map — shown when upgrade needs confirmation. Tap or voice to select. */}
-                        {card.needsConfirmation && !confirmedTurnIds.has(turn.id) && (
+                        {/* Interactive Seat Map with integrated pricing toggle + CTA */}
+                        {showInteractiveMap && (
                           <SeatMap
                             selectedSeat={card.upgrade.seat}
                             onSelectSeat={(seatId) => {
@@ -1139,27 +1155,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                                 nativeRef.current.injectText(`I'll take seat ${seatId}`);
                               }
                             }}
+                            pricing={hasPricing ? {
+                              miles: Number(card.upgrade.milesAmount!.replace(/,/g, '')).toLocaleString(),
+                              copay: card.upgrade.copay!,
+                              cash: card.upgrade.cashPrice!,
+                            } : undefined}
+                            onConfirm={(method) => {
+                              sendConfirmation("Yes");
+                            }}
                           />
                         )}
-                        {/* Tap-to-confirm buttons — only on FIRST unconfirmed card, never when auto-reconfirm active */}
-                        {card.needsConfirmation && turn.id === turns[turns.length - 1]?.id && !confirmedTurnIds.has(turn.id) && !confirmationActive && (
-                          <div className="flex gap-3 mt-4 pt-3 border-t border-outline-variant/20">
-                            <button
-                              onClick={() => sendConfirmation("Yes")}
-                              disabled={confirmInFlight.current}
-                              className="flex-1 bg-secondary text-white py-3 rounded-xl font-bold text-sm shadow-md hover:bg-secondary/90 active:scale-95 transition-all"
-                            >
-                              Yes, upgrade
-                            </button>
-                            <button
-                              onClick={() => sendConfirmation("No")}
-                              disabled={confirmInFlight.current}
-                              className="flex-1 bg-surface-container-highest text-on-surface py-3 rounded-xl font-bold text-sm hover:bg-surface-container-high active:scale-95 transition-all"
-                            >
-                              No thanks
-                            </button>
-                          </div>
-                        )}
+                        {/* Processing indicator after confirm */}
                         {card.needsConfirmation && (confirmedTurnIds.has(turn.id) || confirmationActive) && (
                           <motion.div
                             initial={{ opacity: 0, scale: 0.8 }}
@@ -1174,10 +1180,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                             >
                               <CheckCircle2 size={16} className="text-green-500" />
                             </motion.div>
-                            <p className="text-sm text-on-surface-variant font-medium">Confirmed — processing</p>
+                            <p className="text-sm text-on-surface-variant font-medium">Confirmed — processing upgrade</p>
                           </motion.div>
                         )}
                       </div>
+                      )}
+                      </>
                       );
                     })()}
 
