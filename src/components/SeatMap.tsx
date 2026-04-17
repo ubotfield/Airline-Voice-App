@@ -55,7 +55,8 @@ export const SeatMap: React.FC<SeatMapProps> = ({ selectedSeat, onSelectSeat }) 
         <p className="text-[9px] text-on-surface-variant/60 mb-3">Tap an available seat or say it aloud</p>
       )}
 
-      <svg viewBox={`0 0 ${totalW} ${totalH}`} className="w-full max-w-[200px] mx-auto" role="img" aria-label="First Class Seat Map">
+      {/* touch-action: manipulation prevents iOS from interpreting taps as zoom/scroll */}
+      <svg viewBox={`0 0 ${totalW} ${totalH}`} className="w-full max-w-[200px] mx-auto" role="img" aria-label="First Class Seat Map" style={{ touchAction: 'manipulation' }}>
         {/* Row numbers + Seats */}
         {ROWS.map((row, ri) => {
           const y = PAD_Y + 20 + ri * (SEAT_H + ROW_GAP);
@@ -80,8 +81,22 @@ export const SeatMap: React.FC<SeatMapProps> = ({ selectedSeat, onSelectSeat }) 
                 return (
                   <g
                     key={seat.id}
-                    onClick={() => handleSeatTap(seat.id, seat.status)}
-                    style={{ cursor: isAvailable ? 'pointer' : 'default' }}
+                    onClick={(e) => { e.preventDefault(); handleSeatTap(seat.id, seat.status); }}
+                    // iOS PWA fix: SVG <g> elements don't reliably receive click events
+                    // in standalone mode inside scrollable containers. Add touch + pointer handlers.
+                    onTouchEnd={(e) => {
+                      if (isAvailable) {
+                        e.preventDefault(); // Prevent scroll/zoom interpretation
+                        e.stopPropagation();
+                        handleSeatTap(seat.id, seat.status);
+                      }
+                    }}
+                    onPointerDown={(e) => {
+                      if (isAvailable) {
+                        e.stopPropagation(); // Prevent drag-to-dismiss from triggering
+                      }
+                    }}
+                    style={{ cursor: isAvailable ? 'pointer' : 'default', touchAction: 'manipulation' }}
                     role={isAvailable ? 'button' : undefined}
                     aria-label={isAvailable ? `Select seat ${seat.id}` : `Seat ${seat.id} occupied`}
                     tabIndex={isAvailable ? 0 : undefined}

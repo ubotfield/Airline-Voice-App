@@ -483,9 +483,9 @@ export class NativeVoiceService {
       if (!this.shouldRestart) return;
       if (this.pipelineState !== "idle") return;
 
-      // Fix 4: Reduced from 8s to 5s for faster recovery from silent hangs
+      // Fix 4+: Reduced from 5s to 3s for faster recovery from post-confirmation hangs
       const staleDuration = Date.now() - this.lastRecognitionActivity;
-      if (staleDuration > 5000) {
+      if (staleDuration > 3000) {
         dbg(`⚠️ Listening watchdog: no activity for ${Math.round(staleDuration / 1000)}s — forcing restart`);
         this.lastRecognitionActivity = Date.now(); // prevent rapid re-triggers
 
@@ -504,7 +504,7 @@ export class NativeVoiceService {
 
         this.callbacks.onStatusChange?.("Listening...");
       }
-    }, 4000);
+    }, 3000);
   }
 
   private stopListeningWatchdog(): void {
@@ -749,6 +749,14 @@ export class NativeVoiceService {
     if (this.audioContext && this.audioContext.state === "suspended") {
       dbg("startRecordingChunk: resuming suspended monitoring AudioContext");
       this.audioContext.resume().catch(() => {});
+    }
+    // Health check: If AudioContext is closed or analyser is missing, rebuild volume monitor.
+    // This happens after long confirm→reconfirm cycles where the context gets GC'd.
+    if (!this.audioContext || this.audioContext.state === "closed" || !this.volumeAnalyser) {
+      dbg("startRecordingChunk: monitoring AudioContext dead — rebuilding volume monitor");
+      if (this.mediaStream) {
+        this.setupVolumeMonitor(this.mediaStream);
+      }
     }
 
     try {

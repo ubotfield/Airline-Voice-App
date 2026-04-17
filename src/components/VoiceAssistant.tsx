@@ -730,6 +730,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                 confirmedCardTypeRef.current = null;
                 try { navigator?.vibrate?.(20); } catch {} // Haptic on completion
                 console.log("[voice] Confirmation flow complete — agent executed action");
+
+                // BUG FIX: Force pipeline restart after confirmation flow completes.
+                // The post-TTS cooldown + topic-switch session reset can leave the
+                // recording pipeline stalled. Explicitly kick it after a short delay.
+                setTimeout(() => {
+                  if (nativeRef.current?.isConnected && agentRef.current?.isActive) {
+                    console.log("[voice] Post-confirmation: forcing pipeline restart");
+                    // Reset topic tracking so the next question gets fresh classification
+                    currentTopicRef.current = "none";
+                  }
+                }, 500);
               }
 
               // Add conversation turn
@@ -983,11 +994,13 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       card.type === "baggage" && "border-l-2 border-primary/20 pl-3",
                     )}
                   >
-                    {/* User said */}
+                    {/* User said — hide for auto-reconfirm turns */}
+                    {!(/^yes,?\s*(go ahead|confirmed)/i.test(turn.userText)) && (
                     <div className="mb-2">
                       <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest">You said</p>
                       <p className="text-primary font-medium text-lg italic">"{turn.userText}"</p>
                     </div>
+                    )}
 
                     {/* Agent headline */}
                     <div className="flex items-center gap-3 mb-4">
@@ -1099,17 +1112,22 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     )}
 
                     {/* ─ Upgrade Card ─ */}
-                    {card.type === "upgrade" && card.upgrade && (
+                    {card.type === "upgrade" && card.upgrade && (() => {
+                      const isConfirmed = card.headline === "Your upgrade is confirmed!";
+                      return (
                       <div className="bg-surface-container-high rounded-2xl p-5 mb-4">
                         <div className="flex items-center gap-2 mb-2">
-                          <ArrowUpCircle size={18} className="text-secondary" />
-                          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">Upgrade</span>
+                          <ArrowUpCircle size={18} className={isConfirmed ? "text-green-500" : "text-secondary"} />
+                          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-on-surface-variant">
+                            {isConfirmed ? "Upgrade Confirmed" : "Upgrade"}
+                          </span>
                         </div>
                         <p className="text-lg font-bold text-primary mb-1">{card.upgrade.cabin}</p>
                         {card.upgrade.seat && (
                           <p className="text-sm text-on-surface-variant">Seat {card.upgrade.seat}</p>
                         )}
-                        {card.upgrade.cost && (
+                        {/* Hide pricing on confirmed cards — prevents double-pricing display */}
+                        {card.upgrade.cost && !isConfirmed && (
                           <p className="text-xl font-black text-primary mt-2">{card.upgrade.cost}</p>
                         )}
                         {/* Seat Map — shown when upgrade needs confirmation. Tap or voice to select. */}
@@ -1160,7 +1178,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                           </motion.div>
                         )}
                       </div>
-                    )}
+                      );
+                    })()}
 
                     {/* ─ Baggage Card ─ */}
                     {card.type === "baggage" && (
