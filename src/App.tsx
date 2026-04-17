@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Home as HomeIcon, Plane, Star, MoreHorizontal } from 'lucide-react';
 import { MicFilled } from './components/icons/MicFilled';
+import { DeltaLogo } from './components/icons/DeltaLogo';
 import { Home } from './components/Home';
 import { Trips } from './components/Trips';
 import { BoardingPass } from './components/BoardingPass';
@@ -83,17 +84,15 @@ function AppContent() {
       <header className="bg-surface/90 backdrop-blur-md flex justify-between items-center w-full px-6 py-4 fixed top-0 z-50 border-b border-outline-variant/20" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-3">
           <div
-            className="text-secondary select-none cursor-pointer"
+            className="select-none cursor-pointer flex items-center gap-2.5"
             onMouseDown={() => { resetTimerRef.current = setTimeout(doReset, 3000); }}
             onMouseUp={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
             onTouchStart={() => { resetTimerRef.current = setTimeout(doReset, 3000); }}
             onTouchEnd={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
           >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2L2 22h20L12 2z" />
-            </svg>
+            <DeltaLogo size={26} />
+            <h1 className="font-headline font-extrabold text-xl tracking-tighter text-primary uppercase">Fly Delta</h1>
           </div>
-          <h1 className="font-headline font-extrabold text-xl tracking-tighter text-primary uppercase">Fly Delta</h1>
         </div>
         <div className="flex items-center gap-3">
           <button className="text-on-surface-variant hover:text-primary transition-colors p-2">

@@ -5,23 +5,25 @@
   --font-headline: "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
 
-  --color-primary: #001e40;
-  --color-primary-dim: #003366;
+  /* Official Delta Blue — Pantone 654 C */
+  --color-primary: #003366;
+  --color-primary-dim: #002244;
   --color-on-primary: #ffffff;
-  --color-primary-container: #003366;
-  --color-on-primary-container: #799dd6;
+  --color-primary-container: #002855;
+  --color-on-primary-container: #7faad4;
 
   --color-surface: #f9f9ff;
-  --color-on-surface: #001b3c;
+  --color-on-surface: #003366;
 
   --color-surface-container-lowest: #ffffff;
-  --color-surface-container-low: #f0f3ff;
+  --color-surface-container-low: #f0f4ff;
   --color-surface-container: #e7eeff;
-  --color-surface-container-high: #dee8ff;
-  --color-surface-container-highest: #d5e3ff;
+  --color-surface-container-high: #dce6f9;
+  --color-surface-container-highest: #d1ddf0;
 
-  --color-secondary: #E01933;
-  --color-secondary-container: #e41d35;
+  /* Official Delta Red — Pantone 187 C */
+  --color-secondary: #C01933;
+  --color-secondary-container: #C01933;
   --color-on-secondary: #ffffff;
   --color-on-secondary-container: #fffbff;
 
