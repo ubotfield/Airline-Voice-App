@@ -132,11 +132,16 @@ export class AgentforceSession {
     this.lastActivityAt = Date.now(); // A4: Update activity timestamp
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
+    // S1: 30s timeout on agent message POST
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 30000);
     const res = await fetch(apiUrl("/api/agent/message"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: this.sessionId, message, sequenceId: this.sequenceId, variables }),
+      signal: ctrl.signal,
     });
+    clearTimeout(t);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
       throw new Error(err.error || `Message failed: ${res.status}`);
@@ -200,6 +205,9 @@ export class AgentforceSession {
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
 
+    // S1: 30s timeout on initial POST, 15s inactivity timeout on stream reads
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 30000);
     const res = await fetch(apiUrl("/api/agent/speak-stream"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -209,7 +217,9 @@ export class AgentforceSession {
         sequenceId: this.sequenceId,
         variables,
       }),
+      signal: ctrl.signal,
     });
+    clearTimeout(t);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -221,8 +231,20 @@ export class AgentforceSession {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // S1: Race each read against a 15s inactivity timer
+    const readWithTimeout = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      return new Promise((resolve, reject) => {
+        const inactivityTimer = setTimeout(() => {
+          reader.cancel().catch(() => {});
+          reject(new Error("Stream read timed out (15s inactivity)"));
+        }, 15000);
+        reader.read().then(result => { clearTimeout(inactivityTimer); resolve(result); })
+          .catch(err => { clearTimeout(inactivityTimer); reject(err); });
+      });
+    };
+
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithTimeout();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -283,6 +305,9 @@ export class AgentforceSession {
     const variables = this.getPersonaVariables();
     const message = this.getPersonaPrefix() + text;
 
+    // S1: 30s timeout on initial POST, 15s inactivity timeout on stream reads
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 30000);
     const res = await fetch(apiUrl("/api/agent/message-stream"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -293,7 +318,9 @@ export class AgentforceSession {
         variables,
         ...(options?.skipFiller ? { skipFiller: true } : {}),
       }),
+      signal: ctrl2.signal,
     });
+    clearTimeout(t2);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -305,8 +332,20 @@ export class AgentforceSession {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // S1: Race each read against a 15s inactivity timer
+    const readWithTimeout2 = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      return new Promise((resolve, reject) => {
+        const inactivityTimer = setTimeout(() => {
+          reader.cancel().catch(() => {});
+          reject(new Error("Stream read timed out (15s inactivity)"));
+        }, 15000);
+        reader.read().then(result => { clearTimeout(inactivityTimer); resolve(result); })
+          .catch(err => { clearTimeout(inactivityTimer); reject(err); });
+      });
+    };
+
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithTimeout2();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });

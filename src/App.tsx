@@ -79,7 +79,7 @@ function AppContent() {
   })();
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col">
+    <div className="min-h-[100dvh] bg-surface flex flex-col">
       {/* Top App Bar */}
       <header className="bg-surface/90 backdrop-blur-md flex justify-between items-center w-full px-6 py-4 fixed top-0 z-50 border-b border-outline-variant/20" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-3">
@@ -89,6 +89,7 @@ function AppContent() {
             onMouseUp={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
             onTouchStart={() => { resetTimerRef.current = setTimeout(doReset, 3000); }}
             onTouchEnd={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
+            onTouchCancel={() => { if (resetTimerRef.current) clearTimeout(resetTimerRef.current); }}
           >
             <DeltaLogo size={26} />
             <h1 className="font-headline font-extrabold text-xl tracking-tighter text-primary uppercase">Fly Delta</h1>
@@ -187,7 +188,7 @@ function AppContent() {
       <DebugConsole />
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pb-8 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl shadow-[0_-4px_24px_rgba(0,27,60,0.1)]">
+      <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-4 pt-3 bg-white/80 backdrop-blur-xl rounded-t-2xl shadow-[0_-4px_24px_rgba(0,27,60,0.1)]" style={{ paddingBottom: 'max(2rem, calc(env(safe-area-inset-bottom) + 0.5rem))' }}>
         {[
           { id: 'home', icon: HomeIcon, label: 'Home' },
           { id: 'trips', icon: Plane, label: 'My Trips' },

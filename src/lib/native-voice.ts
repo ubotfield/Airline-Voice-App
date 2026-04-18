@@ -155,6 +155,9 @@ export class NativeVoiceService {
   // e.g., "mileage-number", "confirmation-code", "flight-number"
   public sttContext: string | null = null;
 
+  // S1/S3: AbortController for in-flight STT — lets safety timer cancel hung requests
+  private sttAbortController: AbortController | null = null;
+
   // Consecutive-same-hallucination tracking — if the same phantom text is discarded
   // 3+ times in a row, pause listening longer to break the ambient-noise loop
   private lastDiscardedText = "";
@@ -523,8 +526,12 @@ export class NativeVoiceService {
     this.visibilityHandler = () => {
       if (document.visibilityState === "visible" && this._isConnected) {
         dbg("App resumed from background — checking audio health");
+        // A1: Resume BOTH AudioContexts — iOS suspends both when backgrounded
         if (this.audioContext && this.audioContext.state === "suspended") {
           this.audioContext.resume().catch(() => {});
+        }
+        if (this.playbackContext && this.playbackContext.state === "suspended") {
+          this.playbackContext.resume().catch(() => {});
         }
         const tracks = this.mediaStream?.getAudioTracks();
         if (!tracks || tracks.length === 0 || tracks[0].readyState !== "live") {
@@ -537,8 +544,13 @@ export class NativeVoiceService {
             this.callbacks.onStatusChange?.("Mic lost — tap Stop and retry");
           });
         } else {
-          if (this.pipelineState === "idle" && this.shouldRestart && this.sttMode === "media-recorder") {
-            this.startRecordingChunk();
+          // A3: Resume listening for BOTH STT modes on tab visibility
+          if (this.pipelineState === "idle" && this.shouldRestart) {
+            if (this.sttMode === "media-recorder") {
+              this.startRecordingChunk();
+            } else if (this.sttMode === "speech-recognition" && this.recognition) {
+              try { this.recognition.start(); } catch { /* already running */ }
+            }
           }
         }
       }
@@ -1016,8 +1028,12 @@ export class NativeVoiceService {
   private async transcribeAndRoute(blob: Blob, mimeType: string): Promise<void> {
     dbg(`transcribeAndRoute: sending ${blob.size}B audio (${mimeType.split(";")[0]}) to server STT`);
     this.clearPipelineSafety();
+    // S1/S3: Create AbortController for this STT request so safety timer can cancel it
+    this.sttAbortController = new AbortController();
+    const sttSignal = this.sttAbortController.signal;
     this.pipelineSafetyTimer = window.setTimeout(() => {
-      dbg("⚠️ Pipeline stuck 45s — force reset");
+      dbg("⚠️ Pipeline stuck 45s — force reset + abort in-flight STT");
+      this.sttAbortController?.abort(); // S3: Cancel in-flight STT fetch
       this.pipelineState = "idle";
       if (this._isConnected) {
         this.callbacks.onStatusChange?.("Listening...");
@@ -1034,11 +1050,15 @@ export class NativeVoiceService {
         // NOTE: Do NOT self-clear here. routeToAgent() needs to read sttContext
         // for the confirmation bypass check before clearing it.
       }
+      // S1: 20s timeout on STT fetch via AbortController
+      const sttTimeout = setTimeout(() => { if (!sttSignal.aborted) this.sttAbortController?.abort(); }, 20000);
       const res = await fetch(apiUrl("/api/stt"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sttPayload),
+        signal: sttSignal,
       });
+      clearTimeout(sttTimeout);
 
       if (!res.ok) {
         const errBody = await res.text().catch(() => "");
@@ -1106,6 +1126,7 @@ export class NativeVoiceService {
       this.scheduleNextChunk();
     } finally {
       this.clearPipelineSafety();
+      this.sttAbortController = null;
     }
   }
 
@@ -1421,7 +1442,7 @@ export class NativeVoiceService {
     const currentSttNorm = userText.trim().toLowerCase();
     if (currentSttNorm === this.lastSttResult) {
       this.sttRepeatCount++;
-      if (this.sttRepeatCount >= 1) {
+      if (this.sttRepeatCount >= 2) {
         dbg(`⚠️ Repeat-echo filter: "${userText}" repeated ${this.sttRepeatCount + 1}x consecutively — discarding as TTS echo`);
         this.pipelineState = "idle";
         this.scheduleNextChunk();
@@ -1539,7 +1560,11 @@ export class NativeVoiceService {
                   await this.speakText(responseText);
                 }
               }
-            } catch { /* ignore */ }
+            } catch (ttsErr: any) {
+              // S6: Surface playback failures instead of swallowing them
+              dbg(`⚠️ TTS playback failed: ${ttsErr?.message || ttsErr}`);
+              this.callbacks.onError?.("tts-failed");
+            }
 
             this.stopBargeInDetection();
           }
@@ -1741,11 +1766,16 @@ export class NativeVoiceService {
 
       try {
         dbg(`Fetching TTS (attempt ${attempt}/${MAX_CLIENT_RETRIES}): ${text.substring(0, 60)}`);
+        // S1: 20s timeout on TTS fetch
+        const ttsCtrl = new AbortController();
+        const ttsTimeout = setTimeout(() => ttsCtrl.abort(), 20000);
         const res = await fetch(apiUrl("/api/tts"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
+          signal: ttsCtrl.signal,
         });
+        clearTimeout(ttsTimeout);
 
         if (res.ok) {
           const contentType = res.headers.get("content-type") || "audio/mpeg";

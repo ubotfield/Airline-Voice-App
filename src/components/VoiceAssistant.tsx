@@ -250,6 +250,8 @@ interface ConversationTurn {
   id: string;
   userText: string;
   agentText: string;
+  /** U1: Pre-computed parsed card to avoid re-parsing on every render */
+  parsedCard?: ParsedCard;
 }
 
 export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
@@ -296,6 +298,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const confirmedCardTypeRef = useRef<string | null>(null);
   // Track last selected seat — prevents duplicate seat map when agent confirms the selection
   const lastSelectedSeatRef = useRef<string | null>(null);
+  // U2: Throttle streaming caption via rAF
+  const streamCaptionRef = useRef("");
+  const streamCaptionRafRef = useRef<number | null>(null);
 
   const haptic = (ms = 10) => { try { navigator?.vibrate?.(ms); } catch {} };
 
@@ -321,7 +326,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       if (answer === "Yes") {
         const lastTurn = turns[turns.length - 1];
         if (lastTurn) {
-          confirmedCardTypeRef.current = parseResponseToCard(lastTurn.agentText).type;
+          confirmedCardTypeRef.current = (lastTurn.parsedCard || parseResponseToCard(lastTurn.agentText)).type;
         }
       } else {
         confirmedCardTypeRef.current = null;
@@ -624,8 +629,14 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                     onTextChunk: (_chunk, fullText) => {
                       console.log("[voice] Msg text chunk: " + _chunk.substring(0, 40));
                       setStatus("Speaking...");
-                      // B8: Live caption — show agent text as it streams
-                      setStreamingCaption(fullText || "");
+                      // U2: Throttle caption updates via rAF to avoid per-chunk re-renders
+                      streamCaptionRef.current = fullText || "";
+                      if (!streamCaptionRafRef.current) {
+                        streamCaptionRafRef.current = requestAnimationFrame(() => {
+                          setStreamingCaption(streamCaptionRef.current);
+                          streamCaptionRafRef.current = null;
+                        });
+                      }
                     },
                     onTextComplete: (fullText) => {
                       streamResponse = fullText;
@@ -828,7 +839,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
               // Add conversation turn
               const turnId = `turn-${++turnCounter.current}`;
-              setTurns(prev => [...prev, { id: turnId, userText, agentText: response }]);
+              setTurns(prev => [...prev, { id: turnId, userText, agentText: response, parsedCard: parseResponseToCard(response) }]);
               setCurrentUserText("");
               setStreamingCaption(""); // B8: Clear live caption
 
@@ -1004,7 +1015,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
               {[...Array(4)].map((_, i) => (
                 <motion.div
                   key={i}
-                  animate={{ height: Math.max(4, volume * (6 + i * 6)) }}
+                  style={{ height: 20, transformOrigin: "bottom" }}
+                  animate={{ scaleY: Math.max(0.2, volume * (0.3 + i * 0.3)) }}
                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
                   className="w-1 bg-secondary rounded-full"
                 />
@@ -1062,7 +1074,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
 
               {/* ── Conversation History with Structured Cards ── */}
               {turns.map((turn, turnIndex) => {
-                const card = parseResponseToCard(turn.agentText);
+                const card = turn.parsedCard || parseResponseToCard(turn.agentText);
                 return (
                   <motion.div
                     key={turn.id}
@@ -1241,7 +1253,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                       const hasPricing = !!(card.upgrade.milesAmount && card.upgrade.copay && card.upgrade.cashPrice);
                       const showInteractiveMap = card.needsConfirmation && !confirmedTurnIds.has(turn.id) && !confirmationActive;
                       // Only the LATEST upgrade turn shows the full card — earlier ones collapse
-                      const lastUpgradeIdx = turns.findLastIndex(t => parseResponseToCard(t.agentText).type === "upgrade");
+                      const lastUpgradeIdx = turns.findLastIndex(t => (t.parsedCard || parseResponseToCard(t.agentText)).type === "upgrade");
                       const isLatestUpgradeTurn = lastUpgradeIdx === turnIndex;
 
                       // Collapsed earlier upgrade turn — just show a one-liner

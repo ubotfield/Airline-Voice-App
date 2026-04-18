@@ -75,11 +75,16 @@ async function getAccessToken(): Promise<{
         client_secret: SF_CLIENT_SECRET,
       });
 
+      // S5: 10s timeout on OAuth token fetch
+      const oauthCtrl = new AbortController();
+      const oauthTimeout = setTimeout(() => oauthCtrl.abort(), 10000);
       const res = await fetch(`${SF_LOGIN_URL}/services/oauth2/token`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: params.toString(),
+        signal: oauthCtrl.signal,
       });
+      clearTimeout(oauthTimeout);
 
       if (!res.ok) {
         const err = await res.text();
@@ -1391,6 +1396,25 @@ function synthesizeViaTTSGateway(text: string, voice: string, wsUrl: string): Pr
 
     ws.on("open", () => {
       console.log("[tts] WebSocket connected to gateway");
+      // S8: Heartbeat — ping every 5s, close if no pong within 3s
+      const pingInterval = setInterval(() => {
+        if (completed) { clearInterval(pingInterval); return; }
+        try {
+          ws.ping();
+          const pongTimer = setTimeout(() => {
+            if (!completed) {
+              console.warn("[tts] No pong from gateway — force-closing");
+              completed = true;
+              clearTimeout(timeout);
+              clearInterval(pingInterval);
+              try { ws.terminate(); } catch { /* ignore */ }
+              reject(new Error("TTS gateway unresponsive (missed pong)"));
+            }
+          }, 3000);
+          ws.once("pong", () => clearTimeout(pongTimer));
+        } catch { /* ignore if already closing */ }
+      }, 5000);
+      ws.once("close", () => clearInterval(pingInterval));
     });
 
     ws.on("message", (data: WebSocket.Data, isBinary: boolean) => {
