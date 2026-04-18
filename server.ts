@@ -1119,12 +1119,15 @@ app.post("/api/stt", async (req, res) => {
 
   // Build context-aware hint for the system instruction
   let contextHint = "";
+  const isConfirmationContext = context === "awaiting_confirmation";
   if (context === "mileage-number") {
     contextHint = " CONTEXT: The agent just asked for a SkyMiles/mileage membership number. The user will say a SHORT code — typically 3 to 6 characters (digits like '12345' or alphanumeric like 'AB123'). CRITICAL: Transcribe ONLY the exact digits/letters spoken. Do NOT pad, extend, or add extra digits. If the user says five digits, output exactly five digits. Never output more characters than were actually spoken.";
   } else if (context === "confirmation-code") {
     contextHint = " CONTEXT: The agent just asked for a confirmation/booking code. The user is likely speaking a 6-character alphanumeric code. Prioritize interpreting the audio as a PNR code.";
   } else if (context === "flight-number") {
     contextHint = " CONTEXT: The agent just asked for a flight number. The user is likely saying something like 'DL1234' or 'Delta 1234'. Prioritize interpreting the audio as a flight number.";
+  } else if (isConfirmationContext) {
+    contextHint = " CONTEXT: The agent just asked the user a yes/no confirmation question. The user will likely say 'yes', 'no', 'yeah', 'sure', 'go ahead', 'confirm', or similar short confirmation/denial words. Transcribe exactly what they say — do NOT interpret as numbers or codes.";
   }
 
   try {
@@ -1144,15 +1147,17 @@ app.post("/api/stt", async (req, res) => {
           contents: [{
             parts: [
               // Text instruction FIRST, then audio — order matters for multimodal
-              { text: context
-                ? "Listen to this audio. The speaker is saying a SHORT code or number (3-6 characters). Output ONLY the exact characters spoken — no extra digits, no padding to 10 digits. Transcribe:"
-                : "Transcribe:" },
+              { text: isConfirmationContext
+                ? "Listen to this audio. The speaker is answering a yes/no question. Transcribe exactly what they say:"
+                : context
+                  ? "Listen to this audio. The speaker is saying a SHORT code or number (3-6 characters). Output ONLY the exact characters spoken — no extra digits, no padding to 10 digits. Transcribe:"
+                  : "Transcribe:" },
               { inlineData: { mimeType: normalizedMime, data: audio } },
             ],
           }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: context ? 24 : 256,
+            maxOutputTokens: (context && !isConfirmationContext) ? 24 : 256,
             thinkingConfig: {
               thinkingBudget: 0,
             },
@@ -1229,7 +1234,8 @@ app.post("/api/stt", async (req, res) => {
     }
 
     // Post-process: normalize phonetic letter patterns → alphanumeric codes
-    let text = normalizeSTTAlphanumeric(filteredRaw);
+    // Skip normalization for confirmation context — "yes"/"no" should not be transformed
+    let text = isConfirmationContext ? filteredRaw : normalizeSTTAlphanumeric(filteredRaw);
 
     // Guard: if context expects a short code but STT returned a suspiciously long digit string,
     // the model likely hallucinated extra digits (e.g. "12345" → "1234567890").

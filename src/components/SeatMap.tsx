@@ -275,7 +275,7 @@ export const SeatMap: React.FC<SeatMapProps> = ({ selectedSeat, onSelectSeat, pr
         ))}
       </div>
 
-      {/* ── Pricing Toggle (Miles+Copay vs Cash) ── */}
+      {/* ── Pricing Toggle (Miles+Copay vs Cash) — only when pricing data available ── */}
       {pricing && activeSeat && (
         <div className="mt-4 pt-3 border-t border-outline-variant/20">
           <p className="text-[9px] font-black uppercase tracking-[0.12em] text-on-surface-variant mb-2">
@@ -326,16 +326,18 @@ export const SeatMap: React.FC<SeatMapProps> = ({ selectedSeat, onSelectSeat, pr
               <p className="text-[9px] text-on-surface-variant ml-[18px]">Full cash upgrade</p>
             </button>
           </div>
+        </div>
+      )}
 
-          {/* Single CTA */}
-          {onConfirm && (
-            <button
-              onClick={() => { try { navigator?.vibrate?.(15); } catch {} onConfirm(paymentMethod); }}
-              className="w-full mt-3 bg-secondary text-white py-3.5 rounded-xl font-headline font-bold text-sm shadow-md hover:bg-secondary/90 active:scale-[0.98] transition-all"
-            >
-              Confirm Upgrade to Seat {activeSeat} →
-            </button>
-          )}
+      {/* ── Confirm Button — always visible when a seat is selected, even without pricing ── */}
+      {onConfirm && activeSeat && (
+        <div className={pricing ? "" : "mt-4 pt-3 border-t border-outline-variant/20"}>
+          <button
+            onClick={() => { try { navigator?.vibrate?.(15); } catch {} onConfirm(paymentMethod); }}
+            className="w-full mt-3 bg-secondary text-white py-3.5 rounded-xl font-headline font-bold text-sm shadow-md hover:bg-secondary/90 active:scale-[0.98] transition-all"
+          >
+            Confirm Upgrade to Seat {activeSeat} →
+          </button>
         </div>
       )}
     </motion.div>

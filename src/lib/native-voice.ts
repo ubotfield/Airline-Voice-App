@@ -660,8 +660,9 @@ export class NativeVoiceService {
         }
         if (bestText) {
           this.consecutiveEmptySTT = 0; // Reset on successful recognition
-          // Apply phonetic normalization when context suggests a code is expected
-          if (this.sttContext) {
+          // Apply phonetic normalization when context suggests a code/number is expected
+          // SKIP normalization for "awaiting_confirmation" — we want "yes"/"no" to pass through cleanly
+          if (this.sttContext && this.sttContext !== "awaiting_confirmation") {
             const normalized = normalizeClientSTT(bestText);
             if (normalized !== bestText) {
               dbg(`User said: "${bestText}" → normalized to "${normalized}" (context=${this.sttContext}, confidence=${bestConf.toFixed(2)})`);

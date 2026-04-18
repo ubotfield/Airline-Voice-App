@@ -720,9 +720,15 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   lower.includes("enter your") || lower.includes("need your") || lower.includes("can i have your");
 
                 if (isUpgradeResponse && !isAskingForNumber) {
-                  // Upgrade pricing/confirmation — don't bias STT toward numbers
-                  nativeRef.current.sttContext = null;
-                  console.log("[voice] STT context cleared (upgrade response, not asking for number)");
+                  // Check if this upgrade response is asking for confirmation
+                  const parsed = parseResponseToCard(response);
+                  if (parsed.needsConfirmation) {
+                    nativeRef.current.sttContext = "awaiting_confirmation";
+                    console.log("[voice] STT context set: awaiting_confirmation (upgrade confirmation prompt)");
+                  } else {
+                    nativeRef.current.sttContext = null;
+                    console.log("[voice] STT context cleared (upgrade response, not asking for number)");
+                  }
                 } else if (isAskingForNumber && (lower.includes("skymiles") || lower.includes("mileage number") || lower.includes("membership number") || lower.includes("loyalty number") || lower.includes("miles number"))) {
                   nativeRef.current.sttContext = "mileage-number";
                   console.log("[voice] STT context set: mileage-number");
@@ -733,7 +739,14 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
                   nativeRef.current.sttContext = "flight-number";
                   console.log("[voice] STT context set: flight-number");
                 } else {
-                  nativeRef.current.sttContext = null;
+                  // Check if ANY response is a confirmation prompt (miles, flights, etc.)
+                  const parsed = parseResponseToCard(response);
+                  if (parsed.needsConfirmation) {
+                    nativeRef.current.sttContext = "awaiting_confirmation";
+                    console.log("[voice] STT context set: awaiting_confirmation (general confirmation prompt)");
+                  } else {
+                    nativeRef.current.sttContext = null;
+                  }
                 }
               }
 
